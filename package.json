@@ -1,0 +1,36 @@
+{
+  "name": "a-share-dashboard",
+  "private": true,
+  "version": "0.1.0",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview",
+    "test": "vitest run && node --test server/api.test.mjs server/market.test.mjs server/research.test.mjs",
+    "test:e2e": "playwright test",
+    "start": "node --env-file-if-exists=.env.local server/index.mjs"
+  },
+  "dependencies": {
+    "react": "^19.2.0",
+    "react-dom": "^19.2.0",
+    "react-router": "^7.9.6",
+    "zustand": "^5.0.8",
+    "echarts": "^6.0.0",
+    "use-echarts-react": "^1.0.2",
+    "stock-api": "^2.7.5",
+    "lucide-react": "^0.468.0"
+  },
+  "devDependencies": {
+    "typescript": "~5.9.3",
+    "vite": "^6.4.1",
+    "@vitejs/plugin-react": "^4.7.0",
+    "@types/react": "^19.2.0",
+    "@types/react-dom": "^19.2.0",
+    "tailwindcss": "^4.1.17",
+    "@tailwindcss/vite": "^4.1.17",
+    "vitest": "^3.2.4",
+    "@playwright/test": "^1.56.1",
+    "@types/node": "^22.19.0"
+  }
+}
