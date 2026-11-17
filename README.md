@@ -1,6 +1,6 @@
 # 股见 · A 股持仓分析
 
-React 19、TypeScript、Vite、Tailwind CSS 4、Zustand 与 ECharts 实现的投资组合分析工具。持仓保存在浏览器，基本面和 AI 通过本机 Node 服务获取。
+React 19、TypeScript、Vite、Tailwind CSS 4、Zustand 与 ECharts 实现的投资组合分析工具。持仓保存在浏览器，基本面和 AI 通过 Node 服务或 Cloudflare Worker 获取。
 
 ## 运行
 
@@ -12,6 +12,31 @@ npm run dev
 ```
 
 打开终端显示的本地地址。开发与 `npm run preview` 均包含研究 API。生产使用 `npm run build` 后执行 `npm start`，默认打开 `http://127.0.0.1:5180`；可用 `PORT` 环境变量修改端口。生产服务读取 `.env.local`、提供静态文件与研究 API，并支持前端路由。仅托管 `dist/` 的静态网站不包含研究 API。
+
+## 部署到 Cloudflare Workers
+
+仓库包含 Worker 后端入口和静态资源配置，不能只上传 `dist/`。仅静态部署时，`/api/*` 可能被 SPA 回退成 HTML 首页，HTTP 状态仍是 200，部署成功也不代表接口可用。
+
+在 Cloudflare 控制台绑定 Git 仓库后设置：
+
+- 根目录：项目根目录（`/`）。
+- 构建命令：`npm run build`。
+- 部署命令：`npx wrangler deploy`。
+- Worker 名称：`a-share-dashboard`，与 `wrangler.jsonc` 一致。
+
+先提交并推送本次变更（包括 `worker/`、`server/`、`.agents/skills/`、`wrangler.jsonc` 和依赖锁文件），再对最新提交触发部署。不要使用仅发布静态目录的部署方式。CLI 发布也可执行 `npm run deploy`（先用 `npx wrangler login` 登录）。
+
+`wrangler.jsonc` 用 Fetch 入口处理全部 `/api/*`，由 `ASSETS` 提供前端页面及 SPA 路由。三份 Skill 文件以文本模块打包进 Worker；编辑后需要重新部署。开启 `nodejs_compat` 兼容现有服务逻辑，无需在 Cloudflare 上运行 `npm start` 或常驻 Node 进程。
+
+部署后检查以下地址，不能只看首页：
+
+- `/market`：前端页面。
+- `/api/ai/config`：200、`application/json`，包含两个服务商；未填写用户密钥时 `configured: false` 正常。
+- `/api/research/skills`：200 JSON，包含三种研究流程。
+- `/api/not-found`：404 JSON，不能返回 HTML。
+- `/api/market`：盘面 JSON；若为 502 JSON，说明后端已运行，但行情源连接失败，需另查数据源可达性。
+
+本地验证 Worker：`npm run dev:worker`。仅检查打包、不发布：`npm run check:worker`。每位用户仍在网页「偏好设置」填写自己的模型密钥，不需要在 Cloudflare 配置共享模型密钥。
 
 ## 已实现
 
@@ -45,13 +70,13 @@ npm run dev
 
 盘面候选的「基本面与 AI 研究」提供三种项目自定义流程：`a-share-tape`（量价复核）、`a-share-fundamentals`（基本面复核）、`a-share-risk-review`（反向风险核查）。源文件在 `.agents/skills/<名称>/SKILL.md`，前端可以查看完整内容与 SHA-256 内容版本。它们是本项目编写的分析约束，不是外部认证策略，也不是行情源。
 
-`GET /api/research/skills` 读取固定白名单 Skill；`POST /api/research/analyze` 接受代码、Skill ID、模式和模型选择；AI 模式额外携带当前用户填写的凭证。后端重新取得公开盘面与财报，不信任客户端提供的行情、持仓或指令。`checks` 模式运行固定的资料检查，不调用模型；`ai` 模式把所选 Skill 作为模型系统指令，并传入公开事实与检查结果。无密钥时仍可运行资料检查。Skill 内容修改后，下一次请求会读取新内容与版本，不改变原始选股排名。
+`GET /api/research/skills` 读取固定白名单 Skill；`POST /api/research/analyze` 接受代码、Skill ID、模式和模型选择；AI 模式额外携带当前用户填写的凭证。后端重新取得公开盘面与财报，不信任客户端提供的行情、持仓或指令。`checks` 模式运行固定的资料检查，不调用模型；`ai` 模式把所选 Skill 作为模型系统指令，并传入公开事实与检查结果。无密钥时仍可运行资料检查。Node 服务在下一次请求读取 Skill 新内容与版本；Worker 使用部署时打包的版本，修改后需重新部署。Skill 不改变原始选股排名。
 
-当前没有公告正文、新闻搜索、历史 K 线或分时序列；研究中明确标记这些资料缺口。上线生产时需同时保留 `server/`、`.agents/skills/` 和 `dist/`，单独部署静态 `dist/` 不能运行研究服务。
+当前没有公告正文、新闻搜索、历史 K 线或分时序列；研究中明确标记这些资料缺口。Node 生产运行需保留 `server/`、`.agents/skills/` 和 `dist/`；Cloudflare 按上面的 Worker 方式打包部署。单独部署静态 `dist/` 不能运行研究服务。
 
 在「偏好设置 → AI 模型设置」选择 DeepSeek 或火山方舟，填写自己的 API Key 和准确的文本模型/接入点 ID，点击「保存配置」即可生效，无需改文件和重启服务。可点击「测试连接」验证鉴权与模型可调用性，测试会发送简短消息并可能消耗少量额度。
 
-每位用户的密钥保存在当前标签页的 sessionStorage，刷新保留、关闭标签页后需重新填写，可随时按服务商清除。浏览器会话存储不是加密保险库；页面通过密码框遮挡，不将密钥写入 localStorage、导出文件或服务端磁盘。AI 请求在 JSON 正文携带该用户填写的凭证，经本机服务转发到固定的所选服务商 HTTPS 地址；后端不会将密钥放入模型提示词、响应或日志。模型配置接口仅返回服务商元信息，不返回任何密钥。原有 .env.local 中的共享模型密钥不再作为网页用户的兜底凭证。部署外网时必须使用 HTTPS。
+每位用户的密钥保存在当前标签页的 sessionStorage，刷新保留、关闭标签页后需重新填写，可随时按服务商清除。浏览器会话存储不是加密保险库；页面通过密码框遮挡，不将密钥写入 localStorage、导出文件或服务端磁盘。AI 请求在 JSON 正文携带该用户填写的凭证，经后端服务转发到固定的所选服务商 HTTPS 地址；后端不会将密钥放入模型提示词、响应或日志。模型配置接口仅返回服务商元信息，不返回任何密钥。原有 .env.local 中的共享模型密钥不再作为网页用户的兜底凭证。部署外网时必须使用 HTTPS。
 
 基本面与 Skill AI 请求均使用用户当前填写的凭证；无凭证时不会回退到开发者账户。AI 仅收到服务端取得的公开财务与行情，不发送用户股数、成本或盈亏。演示模式须主动加载真实财报；不自动触发付费模型。
 

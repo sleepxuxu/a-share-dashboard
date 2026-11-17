@@ -7,9 +7,12 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run && node --test server/api.test.mjs server/market.test.mjs server/research.test.mjs",
+    "test": "vitest run && node --test server/api.test.mjs server/market.test.mjs server/research.test.mjs server/fetch-handler.test.mjs",
     "test:e2e": "playwright test",
-    "start": "node --env-file-if-exists=.env.local server/index.mjs"
+    "start": "node --env-file-if-exists=.env.local server/index.mjs",
+    "dev:worker": "npm run build && wrangler dev",
+    "check:worker": "npm run build && wrangler deploy --dry-run",
+    "deploy": "npm run build && wrangler deploy"
   },
   "dependencies": {
     "react": "^19.2.0",
@@ -31,6 +34,7 @@
     "@tailwindcss/vite": "^4.1.17",
     "vitest": "^3.2.4",
     "@playwright/test": "^1.56.1",
-    "@types/node": "^22.19.0"
+    "@types/node": "^22.19.0",
+    "wrangler": "4.162.0"
   }
 }

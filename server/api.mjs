@@ -82,25 +82,27 @@ async function readBody(req){
   for await(const chunk of req){body+=chunk;if(Buffer.byteLength(body)>4096)throw new Error('请求内容过大')}
   return JSON.parse(body)
 }
-export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher)}={}){
+export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),skillSources}={}){
   const active=new Set()
   return async function handleApi(req,res){
     const path=new URL(req.url,'http://localhost')
     if(!path.pathname.startsWith('/api/'))return false
-    // Only the local/same-origin UI may trigger requests with server credentials.
+    // Only same-origin UI requests may reach the research and model endpoints.
     try{
       const origin=req.headers.origin
-      if(req.headers['sec-fetch-site']==='cross-site'||origin&&new URL(origin).host!==req.headers.host){send(res,403,{error:'请从当前应用发起请求'});return true}
+      let originHost=null
+      try{if(origin)originHost=new URL(origin).host}catch{send(res,403,{error:'请从当前应用发起请求'});return true}
+      if(req.headers['sec-fetch-site']==='cross-site'||originHost!==null&&originHost!==req.headers.host){send(res,403,{error:'请从当前应用发起请求'});return true}
       if(path.pathname==='/api/market'&&req.method==='GET'){
         send(res,200,await getMarket(path.searchParams.get('refresh')==='1'))
       }else if(path.pathname==='/api/research/skills'&&req.method==='GET'){
-        send(res,200,{skills:listResearchSkills()})
+        send(res,200,{skills:listResearchSkills(skillSources)})
       }else if(path.pathname==='/api/research/analyze'&&req.method==='POST'){
         if(!req.headers['content-type']?.includes('application/json')){send(res,415,{error:'请求格式须为 JSON'});return true}
         let body
         try{body=await readBody(req)}catch{send(res,400,{error:'请求内容不是有效 JSON 或过大'});return true}
         if(!body||typeof body.code!=='string'||!/^(SH6\d{5}|SZ[03]\d{5})$/.test(body.code)){send(res,400,{error:'股票代码无效'});return true}
-        const skill=getResearchSkill(body.skill)
+        const skill=getResearchSkill(body.skill,skillSources)
         if(!skill||!['checks','ai'].includes(body.mode)){send(res,400,{error:'请选择有效的研究 Skill 与分析模式'});return true}
         const provider=body.mode==='ai'?requestProvider(body):null
         if(body.mode==='ai'&&!provider){send(res,400,{error:'请选择 DeepSeek 或火山方舟'});return true}

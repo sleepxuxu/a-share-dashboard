@@ -4,7 +4,7 @@ import type { ResearchSkill,ResearchSkillId,SkillResearch } from '../types/resea
 
 async function json<T>(url:string,options?:RequestInit):Promise<T>{
   const response=await fetch(url,options)
-  if(!response.headers.get('content-type')?.includes('application/json'))throw new Error('研究服务未启动，请使用 npm run dev 或 npm start 运行应用。')
+  if(!response.headers.get('content-type')?.includes('application/json'))throw new Error('研究接口返回了非 JSON 内容，请检查部署是否包含后端 API，而不是只发布了静态页面。')
   const data=await response.json()
   if(!response.ok)throw new Error(data.error||'请求未能完成，请稍后重试。')
   return data as T

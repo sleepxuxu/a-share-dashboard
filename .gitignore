@@ -24,3 +24,7 @@ test-results
 *.njsproj
 *.sln
 *.sw?
+
+# Cloudflare local state and credentials
+.wrangler/
+.dev.vars*

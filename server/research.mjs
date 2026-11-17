@@ -6,14 +6,15 @@ const definitions=[
   {id:'fundamentals',folder:'a-share-fundamentals',name:'基本面复核',description:'检查报告期、利润、现金流和估值边界。'},
   {id:'risk',folder:'a-share-risk-review',name:'反向风险核查',description:'优先发现风险与未核实资料，不把缺失当作安全。'},
 ]
-export function getResearchSkill(id){
+export function getResearchSkill(id,skillSources){
   const definition=definitions.find(skill=>skill.id===id)
   if(!definition)return null
-  const source=readFileSync(new URL(`../.agents/skills/${definition.folder}/SKILL.md`,import.meta.url),'utf8')
+  const source=skillSources?skillSources[definition.id]:readFileSync(new URL(`../.agents/skills/${definition.folder}/SKILL.md`,import.meta.url),'utf8')
+  if(typeof source!=='string'||!source.trim())throw new Error('研究 Skill 内容缺失')
   return {...definition,version:createHash('sha256').update(source).digest('hex').slice(0,12),
     origin:'项目自定义研究流程，非外部认证策略',instructions:source.replace(/^---\r?\n[\s\S]*?\r?\n---\r?\n/,'').trim()}
 }
-export const listResearchSkills=()=>definitions.map(skill=>getResearchSkill(skill.id))
+export const listResearchSkills=skillSources=>definitions.map(skill=>getResearchSkill(skill.id,skillSources))
 const validNumber=value=>typeof value==='number'&&Number.isFinite(value)
 const fmt=value=>validNumber(value)?value.toFixed(2):'暂无数据'
 const amount=value=>validNumber(value)?`${(value/1e8).toFixed(2)} 亿元`:'暂无数据'

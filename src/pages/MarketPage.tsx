@@ -23,7 +23,7 @@ export function MarketPage(){
     setLoading(true);setError('')
     try{
       const response=await fetch(`/api/market${force?'?refresh=1':''}`,{signal:controller.signal})
-      if(!response.headers.get('content-type')?.includes('application/json'))throw new Error('盘面服务未启动，请使用 npm run dev 或 npm start。')
+      if(!response.headers.get('content-type')?.includes('application/json'))throw new Error('盘面接口返回了非 JSON 内容，请检查部署是否包含后端 API，而不是只发布了静态页面。')
       const result=await response.json();if(!response.ok)throw new Error(result.error||'暂时无法取得盘面')
       if(!controller.signal.aborted)setData(result)
     }catch(e){if(!controller.signal.aborted)setError(e instanceof Error?e.message:'盘面读取失败，请重试。')}
