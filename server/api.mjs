@@ -1,4 +1,7 @@
 import { createMarketService } from './market.mjs'
+import { createAuctionService } from './auction.mjs'
+import { createAuctionBacktestCoverage } from './auction-backtest.mjs'
+import { createAuctionPerformance } from './auction-performance.mjs'
 import { listResearchSkills,getResearchSkill,collectResearchFacts,buildResearchChecks,buildResearchMessages } from './research.mjs'
 const TTL=10*60*1000
 const number=value=>typeof value==='number'&&Number.isFinite(value)?value:null
@@ -82,7 +85,7 @@ async function readBody(req){
   for await(const chunk of req){body+=chunk;if(Buffer.byteLength(body)>4096)throw new Error('请求内容过大')}
   return JSON.parse(body)
 }
-export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),skillSources}={}){
+export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),getAuction=createAuctionService(fetcher),getAuctionBacktestCoverage=createAuctionBacktestCoverage(fetcher),getAuctionPerformance=createAuctionPerformance(fetcher),skillSources}={}){
   const active=new Set()
   return async function handleApi(req,res){
     const path=new URL(req.url,'http://localhost')
@@ -95,6 +98,14 @@ export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=
       if(req.headers['sec-fetch-site']==='cross-site'||originHost!==null&&originHost!==req.headers.host){send(res,403,{error:'请从当前应用发起请求'});return true}
       if(path.pathname==='/api/market'&&req.method==='GET'){
         send(res,200,await getMarket(path.searchParams.get('refresh')==='1'))
+      }else if(path.pathname==='/api/auction'&&req.method==='GET'){
+        send(res,200,await getAuction(path.searchParams.get('refresh')==='1'))
+      }else if(path.pathname==='/api/auction/backtest/coverage'&&req.method==='GET'){
+        send(res,200,await getAuctionBacktestCoverage(path.searchParams.get('refresh')==='1'))
+      }else if(path.pathname==='/api/auction/performance'&&req.method==='GET'){
+        const code=path.searchParams.get('code')||'',date=path.searchParams.get('date')||''
+        if(!/^(SH6\d{5}|SZ[03]\d{5})$/.test(code)||!/^\d{4}-\d{2}-\d{2}$/.test(date)){send(res,400,{error:'股票代码或入选日期无效'});return true}
+        send(res,200,await getAuctionPerformance(code,date,path.searchParams.get('refresh')==='1'))
       }else if(path.pathname==='/api/research/skills'&&req.method==='GET'){
         send(res,200,{skills:listResearchSkills(skillSources)})
       }else if(path.pathname==='/api/research/analyze'&&req.method==='POST'){

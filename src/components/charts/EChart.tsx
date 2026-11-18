@@ -1,9 +1,9 @@
 import { useEffect, useRef } from 'react'
 import { init, use, type EChartsCoreOption } from 'echarts/core'
-import { PieChart, BarChart } from 'echarts/charts'
+import { PieChart, BarChart, LineChart } from 'echarts/charts'
 import { GridComponent, TooltipComponent, AriaComponent } from 'echarts/components'
 import { CanvasRenderer } from 'echarts/renderers'
-use([PieChart,BarChart,GridComponent,TooltipComponent,AriaComponent,CanvasRenderer])
+use([PieChart,BarChart,LineChart,GridComponent,TooltipComponent,AriaComponent,CanvasRenderer])
 // use-echarts-react 1.0.2 imports all of echarts; this lifecycle keeps tree-shaking.
 export function EChart({option,height=240,label}:{option:EChartsCoreOption;height?:number;label:string}){
   const ref=useRef<HTMLDivElement>(null)
