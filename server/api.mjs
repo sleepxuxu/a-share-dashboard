@@ -1,4 +1,5 @@
 import { createMarketService } from './market.mjs'
+import { createTailSelectionService } from './tail-selection.mjs'
 import { createAuctionService } from './auction.mjs'
 import { createAuctionBacktestCoverage } from './auction-backtest.mjs'
 import { createAuctionPerformance } from './auction-performance.mjs'
@@ -85,7 +86,7 @@ async function readBody(req){
   for await(const chunk of req){body+=chunk;if(Buffer.byteLength(body)>4096)throw new Error('请求内容过大')}
   return JSON.parse(body)
 }
-export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),getAuction=createAuctionService(fetcher),getAuctionBacktestCoverage=createAuctionBacktestCoverage(fetcher),getAuctionPerformance=createAuctionPerformance(fetcher),skillSources}={}){
+export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),getTailSelection=createTailSelectionService(fetcher),getAuction=createAuctionService(fetcher),getAuctionBacktestCoverage=createAuctionBacktestCoverage(fetcher),getAuctionPerformance=createAuctionPerformance(fetcher),skillSources}={}){
   const active=new Set()
   return async function handleApi(req,res){
     const path=new URL(req.url,'http://localhost')
@@ -98,6 +99,10 @@ export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=
       if(req.headers['sec-fetch-site']==='cross-site'||originHost!==null&&originHost!==req.headers.host){send(res,403,{error:'请从当前应用发起请求'});return true}
       if(path.pathname==='/api/market'&&req.method==='GET'){
         send(res,200,await getMarket(path.searchParams.get('refresh')==='1'))
+      }else if(path.pathname==='/api/tail-selection'&&req.method==='GET'){
+        const market=path.searchParams.get('market')||'main'
+        if(!['main','all'].includes(market)){send(res,400,{error:'请选择沪深主板或全部沪深 A 股'});return true}
+        send(res,200,await getTailSelection(path.searchParams.get('refresh')==='1',market))
       }else if(path.pathname==='/api/auction'&&req.method==='GET'){
         send(res,200,await getAuction(path.searchParams.get('refresh')==='1'))
       }else if(path.pathname==='/api/auction/backtest/coverage'&&req.method==='GET'){

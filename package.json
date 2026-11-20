@@ -7,7 +7,7 @@
     "dev": "vite",
     "build": "tsc --noEmit && vite build",
     "preview": "vite preview",
-    "test": "vitest run && node --test server/api.test.mjs server/market.test.mjs server/auction.test.mjs server/auction-backtest.test.mjs server/auction-performance.test.mjs server/research.test.mjs server/fetch-handler.test.mjs",
+    "test": "vitest run && node --test server/api.test.mjs server/market.test.mjs server/tail-selection.test.mjs server/auction.test.mjs server/auction-backtest.test.mjs server/auction-performance.test.mjs server/research.test.mjs server/fetch-handler.test.mjs",
     "test:e2e": "playwright test",
     "start": "node --env-file-if-exists=.env.local server/index.mjs",
     "dev:worker": "npm run build && wrangler dev",
