@@ -36,10 +36,10 @@ describe('已入选名单与后续价格测算', () => {
     expect(parseSelections(JSON.stringify(oldExport)).days[0].stocks).toHaveLength(1)
     expect(() => parseSelections(JSON.stringify({ ...oldExport, demo: true }))).toThrow('演示')
   })
-  it('成熟自动快照才存档，排除过期、错误日期和 09:25 前快照', () => {
-    const data = { ...dataset(), automatic: { fetchedAt: '', asOf: '2026-11-18T09:25:00+08:00', isToday: true, stale: false, poolCount: 1, scannedCount: 1, incompleteCount: 0, warnings: [] } }
+  it('成熟自动快照才存档，排除过期、错误日期和 09:25:05 前快照', () => {
+    const data = { ...dataset(), automatic: { fetchedAt: '', asOf: '2026-11-18T09:25:05+08:00', isToday: true, stale: false, poolCount: 1, scannedCount: 1, incompleteCount: 0, warnings: [] } }
     expect(canSaveAutomaticSelection(data)).toBe(true)
-    for (const asOf of ['2026-11-18T09:24:59+08:00', '2026-11-17T10:00:00+08:00', 'invalid']) expect(canSaveAutomaticSelection({ ...data, automatic: { ...data.automatic, asOf } })).toBe(false)
+    for (const asOf of ['2026-11-18T09:24:59+08:00', '2026-11-18T09:25:00+08:00', '2026-11-18T09:25:04+08:00', '2026-11-17T10:00:00+08:00', 'invalid']) expect(canSaveAutomaticSelection({ ...data, automatic: { ...data.automatic, asOf } })).toBe(false)
     expect(canSaveAutomaticSelection({ ...data, demo: true })).toBe(false)
     expect(canSaveAutomaticSelection({ ...data, automatic: { ...data.automatic, stale: true } })).toBe(false)
   })

@@ -32,7 +32,7 @@ export function screenAuction(record: AuctionRecord, rules = DEFAULT_AUCTION_RUL
     { label: '09:15 涨停价开竞价', status: compare(record.price091500, record.limitUpPrice, (a, b) => cents(a) === cents(b)),
       detail: `09:15:00 ${money(record.price091500)} / 今日涨停价 ${money(record.limitUpPrice)}` },
     { label: '竞价尾段价格抬升', status: compare(record.price092500, record.price092457, (a, b) => cents(a) > cents(b)),
-      detail: `09:25:00 ${money(record.price092500)} > 09:24:57 ${money(record.price092457)}` },
+      detail: `${record.auctionTime ?? '09:25:00'} ${money(record.price092500)} > 09:24:57 ${money(record.price092457)}` },
     { label: '竞价放量或成交额达标', status: liquidityStatus,
       detail: `竞价量 / 昨日全天量 ${volumePercent === null ? '缺失' : `${volumePercent.toFixed(2)}%`}（须 > ${rules.volumePercent}%）；竞价成交额 ${record.auctionAmount === null ? '缺失' : `${(record.auctionAmount / 1e8).toFixed(4)} 亿元`}（须 > ${rules.amountYuan / 1e8} 亿元），满足任一项` },
     { label: '排除创业板与 ST', status: excluded.length ? 'fail' as const : 'pass' as const,
@@ -86,7 +86,8 @@ export function parseAuctionDataset(text: string): AuctionDataset {
         throw new Error(`${prefix}${price} 高于对应涨停价，请检查日期和单位。`)
     }
     if(row.previousLimitUpVerified !== undefined && typeof row.previousLimitUpVerified !== 'boolean')throw new Error(`${prefix}previousLimitUpVerified 须为布尔值。`)
-    return { code, name: row.name.trim(), ...values, ...(row.previousLimitUpVerified === true ? { previousLimitUpVerified: true } : {}) }
+    if (row.auctionTime !== undefined && (typeof row.auctionTime !== 'string' || !/^09:25:0[0-5]$/.test(row.auctionTime))) throw new Error(`${prefix}auctionTime 须在 09:25:00–09:25:05 内。`)
+    return { code, name: row.name.trim(), ...values, ...(row.previousLimitUpVerified === true ? { previousLimitUpVerified: true } : {}), ...(typeof row.auctionTime === 'string' ? { auctionTime: row.auctionTime } : {}) }
   })
   return { schemaVersion: 1, ...(data.demo === true ? { demo: true as const } : {}), tradeDate: data.tradeDate, previousTradeDate: data.previousTradeDate, source: data.source.trim(), records }
 }

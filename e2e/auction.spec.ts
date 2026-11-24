@@ -6,6 +6,31 @@ async function unavailableSource(page: Page) {
   await page.route('**/api/auction*', route => route.fulfill({ status: 502, json: { error: '受控测试：自动数据源暂不可用' } }))
 }
 
+test('09:25:05 自动强刷并保存窗口结束后的名单，显示实际采样秒数', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-18T09:24:00+08:00') })
+  await page.clock.pauseAt(new Date('2026-11-18T09:25:04+08:00'))
+  const requests: string[] = []
+  await page.route('**/api/auction*', route => {
+    const force = route.request().url().includes('refresh=1')
+    requests.push(route.request().url())
+    const asOf = `2026-11-18T09:25:0${force ? 5 : 4}+08:00`
+    return route.fulfill({ json: {
+      ...auctionDemo(), demo: undefined, source: '受控竞价数据',
+      records: [{ ...auctionDemo().records[0], auctionTime: force ? '09:25:05' : '09:25:00' }],
+      automatic: { fetchedAt: asOf, asOf, isToday: true, stale: false, poolCount: 1, scannedCount: 1, incompleteCount: 0, warnings: [] },
+    } })
+  })
+  await page.goto('/auction')
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(1)
+  expect(await page.evaluate(() => localStorage.getItem('a-share-auction-selections-v1'))).toBeNull()
+  await page.clock.runFor(999)
+  expect(requests.filter(url => url.includes('refresh=1'))).toHaveLength(0)
+  await page.clock.runFor(1)
+  await expect(page.locator('.auction-table tbody')).toContainText('09:25:05')
+  expect(requests.filter(url => url.includes('refresh=1'))).toHaveLength(1)
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('a-share-auction-selections-v1'))).not.toBeNull()
+})
+
 test('竞价页面导航、演示、阈值重筛、缺失核验、导出与布局', async ({ page }, testInfo) => {
   await unavailableSource(page)
   await page.goto('/auction')

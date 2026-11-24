@@ -35,7 +35,7 @@ export function canSaveAutomaticSelection(dataset: AuctionDataset): boolean {
   if (dataset.demo || !dataset.automatic || dataset.automatic.stale) return false
   const date = new Date(dataset.automatic.asOf)
   if (!Number.isFinite(date.getTime())) return false
-  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date) === dataset.tradeDate && new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date) >= '09:25:00'
+  return new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(date) === dataset.tradeDate && new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(date) >= '09:25:05'
 }
 export function parseSelections(text: string): SelectionArchive {
   if (text.length > 5 * 1024 * 1024) throw new Error('入选名单不能超过 5 MB。')

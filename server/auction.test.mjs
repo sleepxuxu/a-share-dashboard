@@ -24,14 +24,39 @@ test('读取精确时点、手转股，成交额由最终竞价价计算，不�
   assert.deepEqual(record.dataWarnings,[])
 })
 
-test('相邻时点不替代；同一时点冲突或错代码拒绝采用',()=>{
-  const data={...ticks,details:['09:15:01,16.46,100,0,4','09:24:54,14.30,100,0,4','09:24:58,14.31,100,0,4','09:25:01,14.47,9542,0,1']}
+test('固定时点及最终窗口外不替代；同一时点冲突或错代码拒绝采用',()=>{
+  const data={...ticks,details:['09:15:01,16.46,100,0,4','09:24:54,14.30,100,0,4','09:24:58,14.31,100,0,4','09:25:06,14.47,9542,0,1']}
   assert.equal(parseAuctionTicks(data,stock)['09:24:57'],null)
   assert.equal(build({ticks:data}).price091500,null)
   assert.equal(build({ticks:data}).auctionVolume,null)
   assert.equal(build({ticks:{...ticks,code:'000001'}}).price092457,null)
   const conflict={...ticks,details:[...ticks.details,'09:24:57,14.31,8000,0,4']}
   assert.equal(build({ticks:conflict}).price092457,null)
+})
+
+test('最终竞价窗口包含 00 至 05 秒，乱序取最新一笔且价量同源，06 秒排除',()=>{
+  for(let second=0;second<=5;second++){
+    const time=`09:25:0${second}`
+    const record=build({ticks:{...ticks,details:[`${time},14.47,9542,0,1`]}})
+    assert.equal(record.auctionTime,time)
+    assert.equal(record.price092500,14.47)
+    assert.equal(record.auctionVolume,954200)
+  }
+  const details=['09:25:05,14.47,10000,0,1','09:25:00,14.40,9000,0,1','09:25:06,14.48,11000,0,1']
+  const record=build({ticks:{...ticks,details}})
+  assert.equal(record.auctionTime,'09:25:05')
+  assert.equal(record.auctionVolume,1000000)
+  assert.equal(record.auctionAmount,14470000)
+  const early=build({quote:{...quote,f46:14.4,f86:Date.parse('2026-11-18T09:25:04+08:00')/1000},ticks:{...ticks,details}})
+  assert.equal(early.price092500,14.4)
+  assert.equal(early.auctionTime,'09:25:00')
+  assert.equal(early.auctionVolume,900000)
+  const conflict=build({ticks:{...ticks,details:[...details,'09:25:05,14.47,10001,0,1']}})
+  assert.equal(conflict.price092500,null)
+  assert.equal(conflict.auctionVolume,null)
+  const missing=build({ticks:{...ticks,details:['09:25:00,14.47,9542,0,1','09:25:05,14.47,-,0,1']}})
+  assert.equal(missing.auctionTime,'09:25:05')
+  assert.equal(missing.auctionVolume,null)
 })
 
 test('拒绝旧日期、错昨收、不匹配开盘价，零成交与缺失分开处理',()=>{
@@ -92,6 +117,26 @@ test('自动扫描确认交易日，缓存60秒、合并并发、强制刷新，
   const stale=await service()
   assert.equal(stale.automatic.stale,true)
   assert.match(stale.automatic.warnings.at(-1),/保留上次成功快照/)
+})
+
+test('09:25:05 到点后失效窗口结束前的缓存，不等待 60 秒',async()=>{
+  const source=controlledSource();let clock=Date.parse('2026-11-18T09:25:04+08:00')
+  const fetcher=async url=>{
+    const response=await source.fetcher(url)
+    const body=await response.json()
+    if(body.data.f86)body.data.f86=clock/1000
+    return Response.json(body)
+  }
+  const service=createAuctionService(fetcher,()=>clock)
+  const preview=await service()
+  assert.match(preview.automatic.warnings.join('；'),/取数窗口尚未结束/)
+  assert.equal(await service(),preview)
+  clock+=1000
+  const final=await service()
+  assert.equal(source.calls.length,12)
+  assert.notEqual(final,preview)
+  assert.equal(final.automatic.warnings.some(message=>message.includes('取数窗口尚未结束')),false)
+  assert.equal(await service(),final)
 })
 
 test('空池不是错误，池日期错位拒绝扫描；单股失败保留缺失原因',async()=>{

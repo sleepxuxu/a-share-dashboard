@@ -9,6 +9,7 @@ export interface AuctionRecord {
   price091500: number | null
   price092457: number | null
   price092500: number | null
+  auctionTime?: string
   auctionVolume: number | null
   auctionAmount: number | null
   quoteAsOf?: string

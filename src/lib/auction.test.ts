@@ -62,6 +62,13 @@ describe('竞价四项条件', () => {
 })
 
 describe('竞价快照校验', () => {
+  it('导入导出保留最终竞价实际采样时间，核验显示该时点并拒绝窗口外时间', () => {
+    const record = parse({ auctionTime: '09:25:05' }).records[0]
+    expect(record.auctionTime).toBe('09:25:05')
+    expect(screenAuction(record).checks[2].detail).toContain('09:25:05 10.50 元')
+    expect(parseAuctionDataset(JSON.stringify({ ...auctionTemplate(), records: [record] })).records[0].auctionTime).toBe('09:25:05')
+    for (const auctionTime of ['09:24:59', '09:25:06', '09:30:00', 92505]) expect(() => parse({ auctionTime })).toThrow('auctionTime')
+  })
   it('规范代码、保留零成交和缺失值，不按 10% 计算涨停价', () => {
     expect(parse({ code: '000001', previousClose: 12, previousLimitUpPrice: 12, auctionAmount: 0, auctionVolume: 0, price092457: null }).records[0])
       .toMatchObject({ code: 'SZ000001', previousClose: 12, auctionAmount: 0, auctionVolume: 0, price092457: null })
