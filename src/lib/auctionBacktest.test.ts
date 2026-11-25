@@ -18,6 +18,13 @@ const complete = (archive = fixture(), settings = free) => {
 }
 
 describe('竞价回测', () => {
+  it('竞价成交额低于1000万元即使量占比达标也不生成交易', () => {
+    const data = fixture()
+    data.days[0].candidates[0].auctionAmount = 9_999_999
+    expect(complete(data).trades).toHaveLength(0)
+    data.days[0].candidates[0].auctionAmount = 10_000_000
+    expect(complete(data).trades).toHaveLength(1)
+  })
   it('T+1 按次一交易日收盘卖出，股数整百且资金与逐笔盈亏一致', () => {
     const result = complete()
     expect(result.trades[0]).toMatchObject({ buyDate: dates[0], buyTime: '09:30:00', sellDate: dates[1], buyPrice: 10.5, sellPrice: 11, quantity: 4700, pnl: 2350, status: 'closed' })

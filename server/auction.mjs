@@ -50,7 +50,7 @@ export function parseAuctionTicks(data, expectedCode, asOf = '23:59:59') {
     const parts = raw.split(','),
       time = parts[0]
     if (
-      !['09:15:00', '09:24:57'].includes(time) &&
+      !['09:15:00', '09:15:01', '09:15:02', '09:24:57', '09:24:58', '09:24:59'].includes(time) &&
       !/^09:25:0[0-5]$/.test(time)
     )
       continue
@@ -68,7 +68,11 @@ export function parseAuctionTicks(data, expectedCode, asOf = '23:59:59') {
   const result = {}
   for (const time of [
     '09:15:00',
+    '09:15:01',
+    '09:15:02',
     '09:24:57',
+    '09:24:58',
+    '09:24:59',
     ...Array.from(grouped.keys()).filter((time) => time >= '09:25:00'),
   ]) {
     const rows = grouped.get(time) || []
@@ -110,7 +114,11 @@ export function buildAuctionRecord({
     previousVolume: null,
     limitUpPrice: null,
     price091500: null,
+    price091501: null,
+    price091502: null,
     price092457: null,
+    price092458: null,
+    price092459: null,
     price092500: null,
     auctionVolume: null,
     auctionAmount: null,
@@ -160,7 +168,11 @@ export function buildAuctionRecord({
   }
   for (const [time, field] of [
     ['09:15:00', 'price091500'],
+    ['09:15:01', 'price091501'],
+    ['09:15:02', 'price091502'],
     ['09:24:57', 'price092457'],
+    ['09:24:58', 'price092458'],
+    ['09:24:59', 'price092459'],
     ['09:25:00', 'price092500'],
   ]) {
     if (elapsed < time) {
@@ -169,6 +181,7 @@ export function buildAuctionRecord({
     }
     const point = points[time]
     if (!point || point.price === null) {
+      if (time.startsWith('09:15:') || time.startsWith('09:24:')) continue
       warnings.push(
         time === '09:25:00'
           ? '缺少 09:25:00–09:25:05 竞价快照'
@@ -182,6 +195,10 @@ export function buildAuctionRecord({
     }
     record[field] = point.price
   }
+  if (elapsed >= '09:15:00' && ['price091500', 'price091501', 'price091502'].every((field) => record[field] === null))
+    warnings.push('缺少有效的 09:15:00／01／02 精确快照，开竞价条件待核验')
+  if (elapsed >= '09:24:57' && ['price092457', 'price092458', 'price092459'].every((field) => record[field] === null))
+    warnings.push('缺少有效的 09:24:57／58／59 精确快照，尾段比较待核验')
   const final = points['09:25:00']
   if (record.price092500 !== null) {
     if (!samePrice(record.price092500, positive(quote.f46))) {
@@ -239,7 +256,7 @@ export function createAuctionService(fetcher = fetch, now = Date.now) {
       ? Date.parse(`${cache.value.tradeDate}T09:25:05+08:00`)
       : 0
     const crossedCutoff = cache && cache.at < cutoff && now() >= cutoff
-    if (!force && cache && !crossedCutoff && now() - cache.at < 60000)
+    if (!force && cache && !crossedCutoff && now() - cache.at < 30000)
       return cache.value
     if (inflight) return inflight
     inflight = (async () => {
@@ -338,9 +355,9 @@ export function createAuctionService(fetcher = fetch, now = Date.now) {
           '09:25:05 竞价取数窗口尚未结束；当前结果仅供预览，暂不存档。',
         )
       const incomplete = records.filter((row) =>
+        ['price091500', 'price091501', 'price091502'].every((field) => row[field] === null) ||
+        ['price092457', 'price092458', 'price092459'].every((field) => row[field] === null) ||
         [
-          'price091500',
-          'price092457',
           'price092500',
           'auctionVolume',
           'previousVolume',

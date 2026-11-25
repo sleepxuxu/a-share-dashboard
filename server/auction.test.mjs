@@ -25,13 +25,50 @@ test('读取精确时点、手转股，成交额由最终竞价价计算，不�
 })
 
 test('固定时点及最终窗口外不替代；同一时点冲突或错代码拒绝采用',()=>{
-  const data={...ticks,details:['09:15:01,16.46,100,0,4','09:24:54,14.30,100,0,4','09:24:58,14.31,100,0,4','09:25:06,14.47,9542,0,1']}
+  const data={...ticks,details:['09:15:03,16.46,100,0,4','09:24:54,14.30,100,0,4','09:24:58,14.31,100,0,4','09:25:06,14.47,9542,0,1']}
   assert.equal(parseAuctionTicks(data,stock)['09:24:57'],null)
   assert.equal(build({ticks:data}).price091500,null)
   assert.equal(build({ticks:data}).auctionVolume,null)
   assert.equal(build({ticks:{...ticks,code:'000001'}}).price092457,null)
   const conflict={...ticks,details:[...ticks.details,'09:24:57,14.31,8000,0,4']}
   assert.equal(build({ticks:conflict}).price092457,null)
+})
+
+test('开竞价允许00、01、02秒精确报价，冲突及未来报价不采用，03秒不补齐',()=>{
+  for(const second of ['00','01','02']){
+    const details=ticks.details.map(line=>line.replace('09:15:00',`09:15:${second}`))
+    const record=build({ticks:{...ticks,details}})
+    assert.equal(record[`price0915${second}`],16.46)
+    if(second!=='00')assert.equal(record.price091500,null)
+    assert.deepEqual(record.dataWarnings,[])
+  }
+  const details=['09:15:02,16.46,100,0,4','09:15:01,16.45,100,0,4','09:15:02,16.45,100,0,4']
+  assert.equal(build({ticks:{...ticks,details}}).price091502,null)
+  assert.equal(build({ticks:{...ticks,details}}).price091501,16.45)
+  const points=parseAuctionTicks({...ticks,details},stock,'09:15:00')
+  assert.equal(points['09:15:01'],null)
+  assert.equal(points['09:15:02'],null)
+  const missing=build({ticks:{...ticks,details:['09:15:03,16.46,100,0,4']}})
+  assert.equal(missing.price091501,null)
+  assert.equal(missing.price091502,null)
+  assert.ok(missing.dataWarnings.some(message=>message.includes('开竞价条件待核验')))
+})
+
+test('独立读取57、58、59秒，缺失57时保留58或59；冲突与未来时点不补齐',()=>{
+  for(const second of ['57','58','59']){
+    const record=build({ticks:{...ticks,details:[`09:24:${second},14.30,8000,0,4`,'09:25:02,14.47,9542,0,1']}})
+    assert.equal(record[`price0924${second}`],14.3)
+    assert.equal(record.auctionTime,'09:25:02')
+    assert.equal(record.auctionVolume,954200)
+  }
+  const details=['09:24:59,14.31,8000,0,4','09:24:58,14.30,8000,0,4','09:24:59,14.32,8000,0,4']
+  const record=build({ticks:{...ticks,details}})
+  assert.equal(record.price092457,null)
+  assert.equal(record.price092458,14.3)
+  assert.equal(record.price092459,null)
+  const points=parseAuctionTicks({...ticks,details},stock,'09:24:57')
+  assert.equal(points['09:24:58'],null)
+  assert.equal(points['09:24:59'],null)
 })
 
 test('最终竞价窗口包含 00 至 05 秒，乱序取最新一笔且价量同源，06 秒排除',()=>{
@@ -100,7 +137,7 @@ function controlledSource(){
   return {fetcher,calls,setFail:value=>{fail=value},setEmpty:value=>{empty=value},setWrongDate:value=>{wrongDate=value},setPartial:value=>{partial=value}}
 }
 
-test('自动扫描确认交易日，缓存60秒、合并并发、强制刷新，失败保留并标记旧快照',async()=>{
+test('自动扫描确认交易日，缓存30秒、合并并发、强制刷新，失败保留并标记旧快照',async()=>{
   const source=controlledSource();let clock=at
   const service=createAuctionService(source.fetcher,()=>clock)
   const [first,joined]=await Promise.all([service(),service()])
@@ -117,6 +154,18 @@ test('自动扫描确认交易日，缓存60秒、合并并发、强制刷新，
   const stale=await service()
   assert.equal(stale.automatic.stale,true)
   assert.match(stale.automatic.warnings.at(-1),/保留上次成功快照/)
+})
+
+test('缓存满30秒重新取数，30秒之前复用结果',async()=>{
+  const source=controlledSource();let clock=at
+  const service=createAuctionService(source.fetcher,()=>clock)
+  const first=await service()
+  clock+=29999
+  assert.equal(await service(),first)
+  assert.equal(source.calls.length,6)
+  clock+=1
+  assert.notEqual(await service(),first)
+  assert.equal(source.calls.length,12)
 })
 
 test('09:25:05 到点后失效窗口结束前的缓存，不等待 60 秒',async()=>{
@@ -151,6 +200,34 @@ test('空池不是错误，池日期错位拒绝扫描；单股失败保留缺�
   assert.equal(result.records[0].previousVolume,29896900)
   assert.match(result.records[0].dataWarnings.join('；'),/竞价分笔读取失败/)
   assert.equal(result.automatic.incompleteCount,1)
+})
+
+test('仅缺00秒但01或02有效时，不把开竞价条件计为缺失',async()=>{
+  for(const second of ['01','02']){
+    const source=controlledSource()
+    const fetcher=async url=>{
+      if(url.includes('/details/'))return Response.json({rc:0,data:{...ticks,details:ticks.details.map(line=>line.replace('09:15:00',`09:15:${second}`))}})
+      return source.fetcher(url)
+    }
+    const result=await createAuctionService(fetcher,()=>at)()
+    assert.equal(result.records[0].price091500,null)
+    assert.equal(result.records[0][`price0915${second}`],16.46)
+    assert.equal(result.automatic.incompleteCount,0)
+  }
+})
+
+test('仅缺57秒但58或59有效时，不把比较条件计为缺失',async()=>{
+  for(const second of ['58','59']){
+    const source=controlledSource()
+    const fetcher=async url=>{
+      if(url.includes('/details/'))return Response.json({rc:0,data:{...ticks,details:ticks.details.map(line=>line.replace('09:24:57',`09:24:${second}`))}})
+      return source.fetcher(url)
+    }
+    const result=await createAuctionService(fetcher,()=>at)()
+    assert.equal(result.records[0].price092457,null)
+    assert.equal(result.records[0][`price0924${second}`],14.3)
+    assert.equal(result.automatic.incompleteCount,0)
+  }
 })
 
 test('Worker Fetch 入口提供自动竞价 JSON，保留跨站校验与refresh参数',async()=>{

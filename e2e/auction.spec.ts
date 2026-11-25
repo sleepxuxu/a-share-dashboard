@@ -1,5 +1,162 @@
 import { test, expect, type Page } from '@playwright/test'
 import { auctionDemo, auctionTemplate } from '../src/lib/auction'
+
+test('竞价额1000万元门槛独立生效，低成交量可保留，边界、缺额、核验和导出一致', async ({ page }) => {
+  const base = auctionDemo().records[0]
+  const records = [
+    { ...base, code: 'SZ000001', name: '少一元排除', auctionAmount: 9_999_999 },
+    { ...base, code: 'SH600000', name: '恰好1000万', auctionAmount: 10_000_000 },
+    { ...base, code: 'SZ000002', name: '超过1000万', auctionAmount: 10_000_001 },
+    { ...base, code: 'SZ000003', name: '缺额待核验', auctionAmount: null },
+  ]
+  await page.route('**/api/auction*', route => route.fulfill({ json: {
+    ...auctionTemplate(), records, source: '最低额受控测试', automatic: {
+      fetchedAt: '2026-11-18T02:00:00Z', asOf: '2026-11-18T02:00:00Z', isToday: false, stale: false,
+      poolCount: 4, scannedCount: 4, incompleteCount: 1, warnings: [],
+    },
+  } }))
+  await page.goto('/auction')
+  await expect(page.getByLabel('固定附加条件')).toContainText('竞价成交额 ≥ 1000 万元')
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  await expect(page.locator('.auction-table tbody')).toContainText('0.1000')
+  await page.getByRole('button', { name: '核验恰好1000万', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('10,000,000 元')
+  await page.keyboard.press('Escape')
+  const event = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出入选', exact: true }).click()
+  const download = await event
+  const exported = JSON.parse(await readFile((await download.path())!, 'utf8'))
+  expect(exported.records.map((record: { name: string }) => record.name)).toEqual(['恰好1000万', '超过1000万'])
+  expect(exported.appliedRules.minimumAuctionAmount).toBe(10_000_000)
+  expect(exported.appliedRules.minimumAuctionVolume).toBeUndefined()
+  expect(exported.records.every((record: { auctionVolume: number }) => record.auctionVolume < 10_000_000)).toBe(true)
+  await page.getByRole('button', { name: '未通过', exact: false }).click()
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(1)
+  await page.getByRole('button', { name: '核验少一元排除', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('9,999,999 元')
+  await expect(page.getByRole('dialog')).toContainText('竞价量占比达标也须满足此项')
+  await page.keyboard.press('Escape')
+  await page.getByRole('button', { name: '待核验', exact: false }).click()
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(1)
+  await expect(page.locator('.auction-table tbody')).toContainText('缺额待核验')
+})
+
+test('每30秒刷新并累计保留入选，缺失或不再满足不移除，重载与导出保留证据', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-18T09:26:00+08:00') })
+  await page.clock.pauseAt(new Date('2026-11-18T09:26:01+08:00'))
+  const base = auctionDemo().records[0]
+  let phase = 0, requests = 0
+  await page.route('**/api/auction*', route => {
+    requests++
+    return route.fulfill({ json: {
+      ...auctionTemplate(), source: '保留入选受控数据',
+      records: phase === 0 ? [{ ...base, name: '先入选甲' }] : phase === 1 ? [{ ...base, name: '先入选甲', price091500: null }, { ...base, code: 'SH600000', name: '后入选乙' }] : [],
+      automatic: { fetchedAt: `2026-11-18T09:26:${phase ? '31' : '01'}+08:00`, asOf: `2026-11-18T09:26:${phase ? '31' : '01'}+08:00`, isToday: true, stale: false, poolCount: phase === 1 ? 2 : 1, scannedCount: phase === 1 ? 2 : 1, incompleteCount: phase === 1 ? 1 : 0, warnings: [] },
+    } })
+  })
+  await page.goto('/auction')
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(1)
+  await expect.poll(() => page.evaluate(() => localStorage.getItem('a-share-auction-matches-v1'))).not.toBeNull()
+  const initialRequests = requests
+  phase = 1
+  await page.clock.runFor(29999)
+  expect(requests).toBe(initialRequests)
+  await page.clock.runFor(1)
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  expect(requests).toBe(initialRequests + 1)
+  await expect(page.locator('.auction-table tbody')).toContainText('已保留入选')
+  await page.getByRole('button', { name: '核验先入选甲', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('09:15:00 11.00 元')
+  await expect(page.getByRole('dialog')).toContainText('已保留入选')
+  await expect(page.getByRole('dialog')).toContainText('保留入选受控数据')
+  await page.keyboard.press('Escape')
+  phase = 2
+  await page.getByRole('button', { name: '刷新竞价', exact: true }).click()
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  await page.reload()
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  const event = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出入选', exact: true }).click()
+  const download = await event
+  const exported = JSON.parse(await readFile((await download.path())!, 'utf8'))
+  expect(exported.records).toHaveLength(2)
+  expect(exported.records[0]).toMatchObject({ price091500: 11, retainedMatch: { source: '保留入选受控数据' } })
+  await page.getByLabel('竞价量占昨日成交量阈值').fill('5')
+  await page.getByRole('button', { name: '应用条件', exact: true }).click()
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(0)
+  await page.getByRole('button', { name: '清空快照', exact: true }).click()
+  expect(await page.evaluate(() => localStorage.getItem('a-share-auction-matches-v1'))).toBeNull()
+})
+
+test('开竞价01或02秒涨停可入选，保留实际时点并可导出重导入', async ({ page }) => {
+  const base = auctionDemo().records[0]
+  const records = [
+    { ...base, name: '01秒涨停', price091500: null, price091501: 11 },
+    { ...base, code: 'SH600000', name: '02秒涨停', price091500: 10.99, price091502: 11 },
+    { ...base, code: 'SZ000002', name: '未涨停样本', price091500: null, price091501: 10.99 },
+    { ...base, code: 'SZ000003', name: '开竞价缺失', price091500: null },
+  ]
+  await page.route('**/api/auction', route => route.fulfill({ json: {
+    ...auctionTemplate(), records, source: '开竞价秒级受控测试',
+    automatic: { fetchedAt: '2026-11-18T02:00:00Z', asOf: '2026-11-18T02:00:00Z', isToday: false, stale: false, poolCount: 4, scannedCount: 4, incompleteCount: 1, warnings: [] },
+  } }))
+  await page.goto('/auction')
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  await expect(page.locator('.auction-table tbody')).toContainText('09:15:01')
+  await expect(page.locator('.auction-table tbody')).toContainText('09:15:02')
+  await page.getByRole('button', { name: '核验01秒涨停', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('09:15:00 缺失 / 09:15:01 11.00 元')
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+  const downloadEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出入选', exact: true }).click()
+  const download = await downloadEvent
+  const stream = await download.createReadStream()
+  const chunks: Buffer[] = []
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk))
+  const buffer = Buffer.concat(chunks)
+  const exported = JSON.parse(buffer.toString())
+  expect(exported.records).toHaveLength(2)
+  expect(exported.records[0]).toMatchObject({ price091500: null, price091501: 11 })
+  expect(exported.records[1].price091502).toBe(11)
+  await page.getByRole('button', { name: '导入竞价快照', exact: true }).click()
+  await page.getByLabel('选择竞价 JSON 文件').setInputFiles({ name: 'opening.json', mimeType: 'application/json', buffer })
+  await page.getByRole('button', { name: '校验并预览', exact: true }).click()
+  await page.getByRole('button', { name: '确认导入 2 条', exact: true }).click()
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  await expect(page.locator('.auction-table tbody')).toContainText('09:15:01')
+  await expect(page.locator('.auction-table tbody')).toContainText('09:15:02')
+})
+
+test('新增58/59秒比较在自动名单、核验和导出中一致生效', async ({ page }) => {
+  const base = auctionDemo().records[0]
+  const records = [
+    { ...base, name: '58秒样本', price092457: null, price092458: 10.3, price092459: null, auctionTime: '09:25:02' },
+    { ...base, code: 'SH600000', name: '59秒样本', price092457: 10.6, price092458: 10.5, price092459: 10.3, auctionTime: '09:25:02' },
+    { ...base, code: 'SZ000002', name: '相等不入选', price092457: null, price092458: 10.5, price092459: 10.6, auctionTime: '09:25:02' },
+  ]
+  await page.route('**/api/auction', route => route.fulfill({ json: {
+    ...auctionTemplate(), records, source: '秒级条件受控测试',
+    automatic: { fetchedAt: '2026-11-18T02:00:00Z', asOf: '2026-11-18T02:00:00Z', isToday: false, stale: false, poolCount: 3, scannedCount: 3, incompleteCount: 0, warnings: [] },
+  } }))
+  await page.goto('/auction')
+  await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
+  await expect(page.locator('.auction-table tbody')).toContainText('09:24:58')
+  await expect(page.locator('.auction-table tbody')).toContainText('09:24:59')
+  await page.getByRole('button', { name: '核验58秒样本', exact: true }).click()
+  await expect(page.getByRole('dialog')).toContainText('09:25:02 10.50 元')
+  await expect(page.getByRole('dialog')).toContainText('09:24:58 10.30 元')
+  await page.getByRole('button', { name: '关闭弹窗' }).click()
+  const downloadEvent = page.waitForEvent('download')
+  await page.getByRole('button', { name: '导出入选', exact: true }).click()
+  const download = await downloadEvent
+  const stream = await download.createReadStream()
+  const chunks: Buffer[] = []
+  for await (const chunk of stream!) chunks.push(Buffer.from(chunk))
+  const exported = JSON.parse(Buffer.concat(chunks).toString())
+  expect(exported.records).toHaveLength(2)
+  expect(exported.records[0]).toMatchObject({ price092457: null, price092458: 10.3, auctionTime: '09:25:02' })
+  expect(exported.records[1].price092459).toBe(10.3)
+})
 import { readFile } from 'node:fs/promises'
 
 async function unavailableSource(page: Page) {

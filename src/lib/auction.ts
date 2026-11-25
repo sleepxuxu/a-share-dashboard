@@ -2,12 +2,29 @@ import type { AuctionDataset, AuctionRecord, AuctionResult, AuctionRules, CheckS
 import { normalizeCode } from './normalizeCode'
 
 export const DEFAULT_AUCTION_RULES: AuctionRules = { volumePercent: 3, amountYuan: 100_000_000 }
-const prices = ['previousClose', 'previousLimitUpPrice', 'limitUpPrice', 'price091500', 'price092457', 'price092500'] as const
+export const MIN_AUCTION_AMOUNT = 10_000_000
+const prices = ['previousClose', 'previousLimitUpPrice', 'limitUpPrice', 'price091500', 'price091501', 'price091502', 'price092457', 'price092458', 'price092459', 'price092500'] as const
 const fields = [...prices, 'previousVolume', 'auctionVolume', 'auctionAmount'] as const
 const cents = (value: number) => Math.round(value * 100)
 const money = (value: number | null) => value === null ? '缺失' : `${value.toFixed(2)} 元`
 const compare = (a: number | null, b: number | null, predicate: (a: number, b: number) => boolean): CheckStatus =>
   a === null || b === null ? 'missing' : predicate(a, b) ? 'pass' : 'fail'
+
+export function auctionOpeningPrices(record: AuctionRecord) {
+  return [
+    { time: '09:15:00', price: record.price091500 },
+    { time: '09:15:01', price: record.price091501 ?? null },
+    { time: '09:15:02', price: record.price091502 ?? null },
+  ]
+}
+
+export function auctionReferencePrices(record: AuctionRecord) {
+  return [
+    { time: '09:24:57', price: record.price092457 },
+    { time: '09:24:58', price: record.price092458 ?? null },
+    { time: '09:24:59', price: record.price092459 ?? null },
+  ]
+}
 
 export function screenAuction(record: AuctionRecord, rules = DEFAULT_AUCTION_RULES): AuctionResult {
   if (!Number.isFinite(rules.volumePercent) || rules.volumePercent <= 0 || rules.volumePercent > 100 ||
@@ -26,19 +43,29 @@ export function screenAuction(record: AuctionRecord, rules = DEFAULT_AUCTION_RUL
   if (/^S?\*?ST/.test(riskName)) excluded.push(`ST 风险警示股票（${record.name}）`)
   const auctionChangePercent = record.price092500 !== null && record.previousClose !== null && record.previousClose > 0
     ? (cents(record.price092500) - cents(record.previousClose)) / cents(record.previousClose) * 100 : null
+  const references = auctionReferencePrices(record)
+  const availablePrices = references.flatMap(point => point.price === null ? [] : [point.price])
+  const tailStatus: CheckStatus = record.price092500 === null || !availablePrices.length ? 'missing'
+    : availablePrices.some(value => cents(record.price092500!) > cents(value)) ? 'pass' : 'fail'
+  const openingPoints = auctionOpeningPrices(record)
+  const openingPrices = openingPoints.flatMap(point => point.price === null ? [] : [point.price])
+  const openingStatus: CheckStatus = record.limitUpPrice === null || !openingPrices.length ? 'missing'
+    : openingPrices.some(value => cents(value) === cents(record.limitUpPrice!)) ? 'pass' : 'fail'
   const checks = [
     { label: '昨日收盘涨停', status: record.previousLimitUpVerified === true ? 'pass' : compare(record.previousClose, record.previousLimitUpPrice, (a, b) => cents(a) === cents(b)),
       detail: record.previousLimitUpVerified === true ? `东方财富前一交易日涨停池确认；前一交易日收盘 ${money(record.previousClose)}` : `前一交易日收盘 ${money(record.previousClose)} / 当日涨停价 ${money(record.previousLimitUpPrice)}` },
-    { label: '09:15 涨停价开竞价', status: compare(record.price091500, record.limitUpPrice, (a, b) => cents(a) === cents(b)),
-      detail: `09:15:00 ${money(record.price091500)} / 今日涨停价 ${money(record.limitUpPrice)}` },
-    { label: '竞价尾段价格抬升', status: compare(record.price092500, record.price092457, (a, b) => cents(a) > cents(b)),
-      detail: `${record.auctionTime ?? '09:25:00'} ${money(record.price092500)} > 09:24:57 ${money(record.price092457)}` },
+    { label: '09:15 涨停价开竞价', status: openingStatus,
+      detail: `${openingPoints.map(point => `${point.time} ${money(point.price)}`).join(' / ')} / 今日涨停价 ${money(record.limitUpPrice)}；任一有效时点等于今日涨停价即可` },
+    { label: '竞价尾段价格抬升', status: tailStatus,
+      detail: `${record.auctionTime ?? '09:25:00'} ${money(record.price092500)} > ${references.map(point => `${point.time} ${money(point.price)}`).join(' / ')}；严格大于任一有效时点即可，三个时点均缺失则待核验` },
     { label: '竞价放量或成交额达标', status: liquidityStatus,
       detail: `竞价量 / 昨日全天量 ${volumePercent === null ? '缺失' : `${volumePercent.toFixed(2)}%`}（须 > ${rules.volumePercent}%）；竞价成交额 ${record.auctionAmount === null ? '缺失' : `${(record.auctionAmount / 1e8).toFixed(4)} 亿元`}（须 > ${rules.amountYuan / 1e8} 亿元），满足任一项` },
     { label: '排除创业板与 ST', status: excluded.length ? 'fail' as const : 'pass' as const,
       detail: excluded.length ? `排除：${excluded.join('、')}` : '非创业板股票，名称未带 ST、*ST 等风险警示标识' },
     { label: '09:25 竞价涨幅非负', status: auctionChangePercent === null ? 'missing' as const : auctionChangePercent < 0 ? 'fail' as const : 'pass' as const,
       detail: `09:25 最终竞价价 ${money(record.price092500)} / 昨收 ${money(record.previousClose)}；竞价涨幅 ${auctionChangePercent === null ? '缺失' : `${auctionChangePercent.toFixed(2)}%`}，须 ≥ 0%（平开保留）` },
+    { label: '竞价成交额不少于 1000 万元', status: record.auctionAmount === null ? 'missing' as const : record.auctionAmount >= MIN_AUCTION_AMOUNT ? 'pass' as const : 'fail' as const,
+      detail: `09:25 最终竞价成交额 ${record.auctionAmount === null ? '缺失' : `${record.auctionAmount.toLocaleString('zh-CN')} 元（${(record.auctionAmount / 1e4).toFixed(4)} 万元）`}，须 ≥ 1000 万元；竞价量占比达标也须满足此项` },
   ]
   return { record, checks, volumePercent, auctionChangePercent, status: checks.some(check => check.status === 'fail') ? 'rejected'
     : checks.some(check => check.status === 'missing') ? 'pending' : 'matched' }
@@ -81,13 +108,21 @@ export function parseAuctionDataset(text: string): AuctionDataset {
         throw new Error(`${prefix}${field} 须为整数股数，请将“手”换算为“股”。`)
       values[field] = value
     }
-    for (const [price, limit] of [['previousClose', 'previousLimitUpPrice'], ['price091500', 'limitUpPrice'], ['price092457', 'limitUpPrice'], ['price092500', 'limitUpPrice']] as const) {
+    for (const [price, limit] of [['previousClose', 'previousLimitUpPrice'], ['price091500', 'limitUpPrice'], ['price091501', 'limitUpPrice'], ['price091502', 'limitUpPrice'], ['price092457', 'limitUpPrice'], ['price092458', 'limitUpPrice'], ['price092459', 'limitUpPrice'], ['price092500', 'limitUpPrice']] as const) {
       if (values[price] !== null && values[limit] !== null && cents(values[price]!) > cents(values[limit]!))
         throw new Error(`${prefix}${price} 高于对应涨停价，请检查日期和单位。`)
     }
     if(row.previousLimitUpVerified !== undefined && typeof row.previousLimitUpVerified !== 'boolean')throw new Error(`${prefix}previousLimitUpVerified 须为布尔值。`)
     if (row.auctionTime !== undefined && (typeof row.auctionTime !== 'string' || !/^09:25:0[0-5]$/.test(row.auctionTime))) throw new Error(`${prefix}auctionTime 须在 09:25:00–09:25:05 内。`)
-    return { code, name: row.name.trim(), ...values, ...(row.previousLimitUpVerified === true ? { previousLimitUpVerified: true } : {}), ...(typeof row.auctionTime === 'string' ? { auctionTime: row.auctionTime } : {}) }
+    let retainedMatch: AuctionRecord['retainedMatch']
+    if (row.retainedMatch !== undefined) {
+      const saved = row.retainedMatch as Record<string, unknown> | null
+      if (!saved || typeof saved.matchedAt !== 'string' || saved.matchedAt.length > 40 || !Number.isFinite(Date.parse(saved.matchedAt)) ||
+          new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date(saved.matchedAt)) !== data.tradeDate ||
+          typeof saved.source !== 'string' || !saved.source.trim() || saved.source.length > 160) throw new Error(`${prefix}retainedMatch 须包含同一交易日的有效 matchedAt 和来源 source。`)
+      retainedMatch = { matchedAt: saved.matchedAt, source: saved.source }
+    }
+    return { code, name: row.name.trim(), ...values, ...(row.previousLimitUpVerified === true ? { previousLimitUpVerified: true } : {}), ...(typeof row.auctionTime === 'string' ? { auctionTime: row.auctionTime } : {}), ...(retainedMatch ? { retainedMatch } : {}) }
   })
   return { schemaVersion: 1, ...(data.demo === true ? { demo: true as const } : {}), tradeDate: data.tradeDate, previousTradeDate: data.previousTradeDate, source: data.source.trim(), records }
 }
@@ -95,13 +130,13 @@ export function parseAuctionDataset(text: string): AuctionDataset {
 export function auctionTemplate(): AuctionDataset {
   return { schemaVersion: 1, tradeDate: '2026-11-18', previousTradeDate: '2026-11-17', source: '请填写数据供应商；价格为北京时间精确时点快照，成交量单位为股，成交额单位为元', records: [{
     code: 'SZ000001', name: '请替换为实际股票', previousClose: null, previousLimitUpPrice: null, previousVolume: null,
-    limitUpPrice: null, price091500: null, price092457: null, price092500: null, auctionVolume: null, auctionAmount: null,
+    limitUpPrice: null, price091500: null, price091501: null, price091502: null, price092457: null, price092458: null, price092459: null, price092500: null, auctionVolume: null, auctionAmount: null,
   }] }
 }
 
 export function auctionDemo(): AuctionDataset {
   const base: AuctionRecord = { code: 'SZ000001', name: '示例甲（虚构）', previousClose: 10, previousLimitUpPrice: 10,
-    previousVolume: 100_000_000, limitUpPrice: 11, price091500: 11, price092457: 10.3, price092500: 10.5,
+    previousVolume: 100_000_000, limitUpPrice: 11, price091500: 11, price091501: null, price091502: null, price092457: 10.3, price092458: null, price092459: null, price092500: 10.5,
     auctionVolume: 4_000_000, auctionAmount: 42_000_000 }
   return { ...auctionTemplate(), demo: true, source: '固定演示 · 全部为虚构快照，不代表这些代码的实际行情', records: [
     base,

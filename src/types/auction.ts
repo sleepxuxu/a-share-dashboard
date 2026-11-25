@@ -7,13 +7,18 @@ export interface AuctionRecord {
   previousVolume: number | null
   limitUpPrice: number | null
   price091500: number | null
+  price091501?: number | null
+  price091502?: number | null
   price092457: number | null
+  price092458?: number | null
+  price092459?: number | null
   price092500: number | null
   auctionTime?: string
   auctionVolume: number | null
   auctionAmount: number | null
   quoteAsOf?: string
   dataWarnings?: string[]
+  retainedMatch?: { matchedAt: string; source: string }
 }
 
 export interface AuctionDataset {
