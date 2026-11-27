@@ -3,9 +3,10 @@ import { createReadStream,existsSync,statSync } from 'node:fs'
 import { resolve,extname,sep } from 'node:path'
 import { fileURLToPath } from 'node:url'
 import { createApiHandler } from './api.mjs'
+import { createFileCandidateStore } from './auction-candidates-file.mjs'
 
 const root=resolve(fileURLToPath(new URL('../dist/',import.meta.url)))
-const handler=createApiHandler()
+const handler=createApiHandler(process.env,{candidateStore:createFileCandidateStore()})
 const types={'.html':'text/html; charset=utf-8','.js':'application/javascript','.css':'text/css','.svg':'image/svg+xml','.png':'image/png','.ico':'image/x-icon'}
 const server=createServer(async(req,res)=>{
   if(await handler(req,res))return

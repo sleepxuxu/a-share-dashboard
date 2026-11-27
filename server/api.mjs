@@ -1,6 +1,6 @@
 import { createMarketService } from './market.mjs'
 import { createTailSelectionService } from './tail-selection.mjs'
-import { createAuctionService } from './auction.mjs'
+import { createAuctionService, createAuctionPreparation } from './auction.mjs'
 import { createAuctionBacktestCoverage } from './auction-backtest.mjs'
 import { createAuctionPerformance } from './auction-performance.mjs'
 import { listResearchSkills,getResearchSkill,collectResearchFacts,buildResearchChecks,buildResearchMessages } from './research.mjs'
@@ -86,7 +86,7 @@ async function readBody(req){
   for await(const chunk of req){body+=chunk;if(Buffer.byteLength(body)>4096)throw new Error('请求内容过大')}
   return JSON.parse(body)
 }
-export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),getTailSelection=createTailSelectionService(fetcher),getAuction=createAuctionService(fetcher),getAuctionBacktestCoverage=createAuctionBacktestCoverage(fetcher),getAuctionPerformance=createAuctionPerformance(fetcher),skillSources}={}){
+export function createApiHandler(env=process.env,{fetcher=fetch,candidateStore=null,getFundamentals=createFundamentalsService(fetcher),getMarket=createMarketService(fetcher),getTailSelection=createTailSelectionService(fetcher),getAuction=createAuctionService(fetcher,Date.now,candidateStore),prepareAuction=createAuctionPreparation(fetcher,Date.now,candidateStore),getAuctionBacktestCoverage=createAuctionBacktestCoverage(fetcher),getAuctionPerformance=createAuctionPerformance(fetcher),skillSources}={}){
   const active=new Set()
   return async function handleApi(req,res){
     const path=new URL(req.url,'http://localhost')
@@ -105,6 +105,8 @@ export function createApiHandler(env=process.env,{fetcher=fetch,getFundamentals=
         send(res,200,await getTailSelection(path.searchParams.get('refresh')==='1',market))
       }else if(path.pathname==='/api/auction'&&req.method==='GET'){
         send(res,200,await getAuction(path.searchParams.get('refresh')==='1'))
+      }else if(path.pathname==='/api/auction/prepare'&&req.method==='POST'){
+        send(res,200,await prepareAuction())
       }else if(path.pathname==='/api/auction/backtest/coverage'&&req.method==='GET'){
         send(res,200,await getAuctionBacktestCoverage(path.searchParams.get('refresh')==='1'))
       }else if(path.pathname==='/api/auction/performance'&&req.method==='GET'){

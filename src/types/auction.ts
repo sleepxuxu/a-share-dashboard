@@ -36,6 +36,19 @@ export interface AuctionDataset {
     poolCount: number
     scannedCount: number
     incompleteCount: number
+    candidatePool?: { sourceDate: string; persisted: boolean; reused: boolean; stockCount: number; dailyCount: number }
+    diagnostics?: {
+      startedAt: string
+      durationMs: number
+      requestCount: number
+      cacheHitCount: number
+      referenceMs: number
+      calendarMs: number
+      poolMs: number
+      stocksMs: number
+      persistedPool?: boolean
+      persistedDailyCount?: number
+    }
     warnings: string[]
   }
 }

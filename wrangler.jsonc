@@ -6,6 +6,10 @@
   "compatibility_flags": [
     "nodejs_compat"
   ],
+  "durable_objects": {
+    "bindings": [{ "name": "AUCTION_CANDIDATES", "class_name": "AuctionCandidateStore" }]
+  },
+  "migrations": [{ "tag": "auction-candidates-v1", "new_sqlite_classes": ["AuctionCandidateStore"] }],
   "assets": {
     "directory": "./dist",
     "binding": "ASSETS",

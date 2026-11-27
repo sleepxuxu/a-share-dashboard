@@ -28,3 +28,4 @@ test-results
 # Cloudflare local state and credentials
 .wrangler/
 .dev.vars*
+.cache/

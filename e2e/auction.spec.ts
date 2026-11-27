@@ -1,6 +1,35 @@
 import { test, expect, type Page } from '@playwright/test'
 import { auctionDemo, auctionTemplate } from '../src/lib/auction'
 
+test('已保存候选池显示来源，收盘准备成功与失败都有明确反馈', async ({ page }) => {
+  let fail = false, preparations = 0
+  await page.route(/\/api\/auction(?:\/prepare)?(?:\?.*)?$/, route => {
+    if (route.request().url().includes('/auction/prepare')) {
+      preparations++
+      expect(route.request().method()).toBe('POST')
+      return route.fulfill(fail ? { status: 502, json: { error: '请在交易日 15:05 后准备下次竞价候选池。' } } : { json: {
+        sourceDate: '2026-11-27', stockCount: 30, dailyCount: 29,
+        message: '已保存 2026-11-27 收盘涨停股 30 只，29 只已备齐成交量；下一个交易日竞价直接扫描，缺失资料自动补取。',
+      } })
+    }
+    return route.fulfill({ json: { ...auctionDemo(), demo: undefined, automatic: {
+      fetchedAt: '2026-11-27T01:25:10Z', asOf: '2026-11-27T01:25:05Z', isToday: true, stale: false,
+      poolCount: 30, scannedCount: 30, incompleteCount: 1, warnings: [],
+      candidatePool: { sourceDate: '2026-11-26', persisted: true, reused: true, stockCount: 30, dailyCount: 29 },
+    } } })
+  })
+  await page.goto('/auction')
+  await expect(page.getByText('已复用 2026-11-26 涨停候选池 · 30 只 · 29 只成交量已备齐')).toBeVisible()
+  await page.getByRole('button', { name: '准备下次竞价', exact: true }).click()
+  await expect(page.getByRole('status')).toContainText('下一个交易日竞价直接扫描')
+  await expect(page.getByRole('button', { name: '准备下次竞价', exact: true })).toBeEnabled()
+  fail = true
+  await page.getByRole('button', { name: '准备下次竞价', exact: true }).click()
+  await expect(page.getByRole('alert')).toContainText('15:05')
+  expect(preparations).toBe(2)
+  await expect(page.locator('.auction-table tbody tr')).not.toHaveCount(0)
+})
+
 test('竞价额1000万元门槛独立生效，低成交量可保留，边界、缺额、核验和导出一致', async ({ page }) => {
   const base = auctionDemo().records[0]
   const records = [
@@ -41,7 +70,7 @@ test('竞价额1000万元门槛独立生效，低成交量可保留，边界、�
   await expect(page.locator('.auction-table tbody')).toContainText('缺额待核验')
 })
 
-test('每30秒刷新并累计保留入选，缺失或不再满足不移除，重载与导出保留证据', async ({ page }) => {
+test('竞价窗口每5秒刷新并累计保留入选，缺失或不再满足不移除，重载与导出保留证据', async ({ page }) => {
   await page.clock.install({ time: new Date('2026-11-18T09:26:00+08:00') })
   await page.clock.pauseAt(new Date('2026-11-18T09:26:01+08:00'))
   const base = auctionDemo().records[0]
@@ -51,7 +80,7 @@ test('每30秒刷新并累计保留入选，缺失或不再满足不移除，重
     return route.fulfill({ json: {
       ...auctionTemplate(), source: '保留入选受控数据',
       records: phase === 0 ? [{ ...base, name: '先入选甲' }] : phase === 1 ? [{ ...base, name: '先入选甲', price091500: null }, { ...base, code: 'SH600000', name: '后入选乙' }] : [],
-      automatic: { fetchedAt: `2026-11-18T09:26:${phase ? '31' : '01'}+08:00`, asOf: `2026-11-18T09:26:${phase ? '31' : '01'}+08:00`, isToday: true, stale: false, poolCount: phase === 1 ? 2 : 1, scannedCount: phase === 1 ? 2 : 1, incompleteCount: phase === 1 ? 1 : 0, warnings: [] },
+      automatic: { fetchedAt: `2026-11-18T09:26:${phase ? '06' : '01'}+08:00`, asOf: `2026-11-18T09:26:${phase ? '06' : '01'}+08:00`, isToday: true, stale: false, poolCount: phase === 1 ? 2 : 1, scannedCount: phase === 1 ? 2 : 1, incompleteCount: phase === 1 ? 1 : 0, warnings: [] },
     } })
   })
   await page.goto('/auction')
@@ -59,7 +88,7 @@ test('每30秒刷新并累计保留入选，缺失或不再满足不移除，重
   await expect.poll(() => page.evaluate(() => localStorage.getItem('a-share-auction-matches-v1'))).not.toBeNull()
   const initialRequests = requests
   phase = 1
-  await page.clock.runFor(29999)
+  await page.clock.runFor(4999)
   expect(requests).toBe(initialRequests)
   await page.clock.runFor(1)
   await expect(page.locator('.auction-table tbody tr')).toHaveCount(2)
@@ -186,6 +215,39 @@ test('09:25:05 自动强刷并保存窗口结束后的名单，显示实际采�
   await expect(page.locator('.auction-table tbody')).toContainText('09:25:05')
   expect(requests.filter(url => url.includes('refresh=1'))).toHaveLength(1)
   await expect.poll(() => page.evaluate(() => localStorage.getItem('a-share-auction-selections-v1'))).not.toBeNull()
+})
+
+test('最终竞价窗口每5秒更新并展示扫描耗时，开盘后恢复30秒', async ({ page }) => {
+  await page.clock.install({ time: new Date('2026-11-18T09:29:49+08:00') })
+  await page.clock.pauseAt(new Date('2026-11-18T09:29:50+08:00'))
+  const requests: string[] = []
+  await page.route('**/api/auction*', route => {
+    requests.push(route.request().url())
+    return route.fulfill({ json: {
+      ...auctionDemo(), demo: undefined,
+      automatic: { fetchedAt: '2026-11-18T01:29:55Z', asOf: '2026-11-18T01:29:55Z', isToday: true, stale: false, poolCount: 5, scannedCount: 5, incompleteCount: 0, warnings: [],
+        diagnostics: { startedAt: '2026-11-18T01:29:53Z', durationMs: 2400, requestCount: 11, cacheHitCount: 7, referenceMs: 100, calendarMs: 0, poolMs: 0, stocksMs: 2300 } },
+    } })
+  })
+  await page.goto('/auction')
+  await expect(page.getByRole('checkbox', { name: '5 秒自动更新' })).toBeChecked()
+  await expect(page.getByText(/本轮耗时 2.4 秒/)).toBeVisible()
+  const initialRequests = requests.length
+  await page.clock.runFor(4999)
+  expect(requests).toHaveLength(initialRequests)
+  await page.clock.runFor(1)
+  await expect.poll(() => requests.length).toBe(initialRequests + 1)
+  await expect(page.getByRole('button', { name: '刷新竞价', exact: true })).toBeEnabled()
+  await page.clock.runFor(5000)
+  await expect(page.getByRole('checkbox', { name: '30 秒自动更新' })).toBeChecked()
+  // A tick already due at 09:30 may finish, but no new request is due in
+  // the following 29 seconds after switching back to the normal cadence.
+  await expect(page.getByRole('button', { name: '刷新竞价', exact: true })).toBeEnabled()
+  const countAtOpen = requests.length
+  await page.clock.runFor(29000)
+  expect(requests).toHaveLength(countAtOpen)
+  await page.clock.runFor(1000)
+  await expect.poll(() => requests.length).toBe(countAtOpen + 1)
 })
 
 test('竞价页面导航、演示、阈值重筛、缺失核验、导出与布局', async ({ page }, testInfo) => {

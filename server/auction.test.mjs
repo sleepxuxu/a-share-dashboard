@@ -1,6 +1,6 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import {buildAuctionRecord,createAuctionService,parseAuctionTicks} from './auction.mjs'
+import {buildAuctionRecord,createAuctionService,createAuctionPreparation,parseAuctionTicks} from './auction.mjs'
 import {createFetchHandler} from './fetch-handler.mjs'
 
 const at=Date.parse('2026-11-18T02:00:00Z')
@@ -149,7 +149,9 @@ test('自动扫描确认交易日，缓存30秒、合并并发、强制刷新，
   assert.equal(first.automatic.incompleteCount,0)
   assert.equal(await service(),first)
   await service(true)
-  assert.equal(source.calls.length,12)
+  assert.equal(source.calls.length,9)
+  assert.equal(first.automatic.diagnostics.requestCount,6)
+  assert.equal(first.automatic.diagnostics.cacheHitCount,0)
   source.setFail(true);clock+=61000
   const stale=await service()
   assert.equal(stale.automatic.stale,true)
@@ -165,7 +167,7 @@ test('缓存满30秒重新取数，30秒之前复用结果',async()=>{
   assert.equal(source.calls.length,6)
   clock+=1
   assert.notEqual(await service(),first)
-  assert.equal(source.calls.length,12)
+  assert.equal(source.calls.length,9)
 })
 
 test('09:25:05 到点后失效窗口结束前的缓存，不等待 60 秒',async()=>{
@@ -182,10 +184,134 @@ test('09:25:05 到点后失效窗口结束前的缓存，不等待 60 秒',async
   assert.equal(await service(),preview)
   clock+=1000
   const final=await service()
-  assert.equal(source.calls.length,12)
+  assert.equal(source.calls.length,9)
   assert.notEqual(final,preview)
   assert.equal(final.automatic.warnings.some(message=>message.includes('取数窗口尚未结束')),false)
   assert.equal(await service(),final)
+})
+
+test('09:25:05 取消尚未完成的预览扫描，强刷及旧调用都取得新一轮结果',async()=>{
+  const source=controlledSource();let clock=Date.parse('2026-11-18T09:24:59+08:00')
+  let release,ready,oldSignal,firstTick=true
+  const gate=new Promise(resolve=>{release=resolve})
+  const started=new Promise(resolve=>{ready=resolve})
+  const fetcher=async(url,options)=>{
+    const body=await (await source.fetcher(url)).json()
+    if(body.data.f86)body.data.f86=clock/1000
+    if(url.includes('/details/')&&firstTick){
+      firstTick=false;oldSignal=options.signal;ready();await gate
+    }
+    return Response.json(body)
+  }
+  const service=createAuctionService(fetcher,()=>clock)
+  const preview=service()
+  await started
+  clock=Date.parse('2026-11-18T09:25:05+08:00')
+  const forced=service(true),joined=service(true)
+  assert.equal(oldSignal.aborted,true)
+  const final=await forced
+  assert.equal(final.records[0].price092500,14.47)
+  assert.equal(final.automatic.asOf,new Date(clock).toISOString())
+  assert.equal(await joined,final)
+  // Even a provider that finishes late after cancellation must not overwrite
+  // the final cache or return a stale preview to its original caller.
+  release()
+  assert.equal(await preview,final)
+  assert.equal(await service(),final)
+  assert.equal(source.calls.filter(url=>url.includes('/details/')).length,2)
+  assert.equal(source.calls.filter(url=>url.includes('/stock/get')&&url.includes('1.000001')).length,2)
+})
+
+test('窗口前启动、窗口后完成的快照仍失效，不按缓存写入时间误判',async()=>{
+  const source=controlledSource();let clock=Date.parse('2026-11-18T09:24:59+08:00'),cross=true
+  const fetcher=async url=>{
+    const body=await (await source.fetcher(url)).json()
+    if(body.data.f86)body.data.f86=clock/1000
+    if(url.includes('/details/')&&cross){cross=false;clock+=6000}
+    return Response.json(body)
+  }
+  const service=createAuctionService(fetcher,()=>clock)
+  const preview=await service()
+  assert.equal(preview.records[0].price092500,null)
+  const final=await service()
+  assert.equal(final.records[0].price092500,14.47)
+  assert.notEqual(final,preview)
+})
+
+test('缓存昨日资料但实时价量每轮重取，缓存按交易日失效',async()=>{
+  const source=controlledSource();let clock=at,volume=9542
+  const fetcher=async url=>{
+    const body=await (await source.fetcher(url)).json()
+    if(body.data.f86)body.data.f86=clock/1000
+    if(url.includes('/details/'))body.data.details=ticks.details.map(line=>line.replace('9542',String(volume)))
+    if(clock>=at+86400000){
+      if(url.includes('getYesterdayZTPool'))body.data.qdate=20261119
+      if(url.includes('/kline/')&&body.data.code==='002861')body.data.klines=[...daily.klines,'2026-11-18,14,14.96,15,14,100000,150000000']
+    }
+    return Response.json(body)
+  }
+  const service=createAuctionService(fetcher,()=>clock)
+  await service()
+  volume=10000
+  const refreshed=await service(true)
+  assert.equal(refreshed.records[0].auctionVolume,1000000)
+  assert.equal(refreshed.automatic.diagnostics.requestCount,3)
+  assert.equal(refreshed.automatic.diagnostics.cacheHitCount,3)
+  assert.equal(source.calls.filter(url=>url.includes('/kline/')).length,2)
+  assert.equal(source.calls.filter(url=>url.includes('getYesterdayZTPool')).length,1)
+  clock+=60000
+  await service(true)
+  assert.equal(source.calls.filter(url=>url.includes('getYesterdayZTPool')).length,2)
+  clock=at+86400000
+  const nextDay=await service(true)
+  assert.equal(nextDay.tradeDate,'2026-11-19')
+  assert.equal(nextDay.previousTradeDate,'2026-11-18')
+  assert.equal(nextDay.records[0].previousVolume,10000000)
+  assert.equal(nextDay.automatic.diagnostics.cacheHitCount,0)
+  assert.equal(nextDay.automatic.diagnostics.requestCount,6)
+})
+
+test('缺失的昨日成交量和空候选池不缓存，下轮可补取',async()=>{
+  const source=controlledSource();let missing=true
+  const fetcher=async url=>{
+    const body=await (await source.fetcher(url)).json()
+    if(url.includes('/kline/')&&body.data.code==='002861'&&missing)body.data.klines=[]
+    return Response.json(body)
+  }
+  const service=createAuctionService(fetcher,()=>at)
+  assert.equal((await service()).records[0].previousVolume,null)
+  missing=false
+  assert.equal((await service(true)).records[0].previousVolume,29896900)
+  assert.equal(source.calls.filter(url=>url.includes('/kline/')&&url.includes('0.002861')).length,2)
+  const emptySource=controlledSource(),emptyService=createAuctionService(emptySource.fetcher,()=>at)
+  emptySource.setEmpty(true)
+  assert.equal((await emptyService()).records.length,0)
+  emptySource.setEmpty(false)
+  assert.equal((await emptyService(true)).records.length,1)
+})
+
+test('个股接口失败不在同轮重复等待，保留缺失并在下一轮恢复',async()=>{
+  const source=controlledSource(),service=createAuctionService(source.fetcher,()=>at)
+  source.setPartial(true)
+  const partial=await service()
+  assert.equal(partial.records[0].price092500,null)
+  assert.equal(source.calls.filter(url=>url.includes('/details/')).length,1)
+  assert.match(partial.records[0].dataWarnings.join('；'),/竞价分笔读取失败/)
+  source.setPartial(false)
+  assert.equal((await service(true)).records[0].price092500,14.47)
+  let failDaily=true
+  const dailySource=controlledSource()
+  const dailyService=createAuctionService(async url=>{
+    if(url.includes('/kline/')&&url.includes('0.002861')&&failDaily){
+      dailySource.calls.push(url)
+      throw new Error('daily unavailable')
+    }
+    return dailySource.fetcher(url)
+  },()=>at)
+  assert.equal((await dailyService()).records[0].previousVolume,null)
+  assert.equal(dailySource.calls.filter(url=>url.includes('/kline/')&&url.includes('0.002861')).length,1)
+  failDaily=false
+  assert.equal((await dailyService(true)).records[0].previousVolume,29896900)
 })
 
 test('空池不是错误，池日期错位拒绝扫描；单股失败保留缺失原因',async()=>{
@@ -241,4 +367,98 @@ test('Worker Fetch 入口提供自动竞价 JSON，保留跨站校验与refresh�
   assert.equal(forced,true)
   const denied=await handler(new Request('https://gujian.test/api/auction',{headers:{origin:'https://other.test'}}),env)
   assert.equal(denied.status,403)
+})
+
+test('昨日候选池及成交量跨服务实例保存复用，个股行情与竞价仍实时获取',async()=>{
+  let saved=null
+  const store={load:async date=>saved?.sourceDate===date?structuredClone(saved):null,save:async value=>{saved=structuredClone(value)}}
+  const firstSource=controlledSource()
+  const first=await createAuctionService(firstSource.fetcher,()=>at,store)()
+  assert.equal(first.automatic.candidatePool.persisted,true)
+  assert.equal(saved.sourceDate,'2026-11-17')
+  assert.equal(saved.stocks[0].daily.klines.length,1)
+  const source=controlledSource()
+  const restarted=await createAuctionService(source.fetcher,()=>at,store)()
+  assert.equal(restarted.automatic.candidatePool.reused,true)
+  assert.equal(restarted.automatic.diagnostics.persistedDailyCount,1)
+  assert.equal(source.calls.length,4)
+  assert.ok(!source.calls.some(url=>url.includes('getYesterdayZTPool')))
+  assert.ok(!source.calls.some(url=>url.includes('/kline/')&&url.includes('0.002861')))
+  assert.equal(restarted.records[0].auctionVolume,first.records[0].auctionVolume)
+})
+
+test('错日或未来候选池不复用，存储失败回退公开源并提示',async()=>{
+  for(const bad of [
+    {sourceDate:'2026-11-16',savedAt:'2026-11-18T02:00:00Z'},
+    {sourceDate:'2026-11-17',savedAt:'2026-11-19T02:00:00Z'},
+  ]){
+    const source=controlledSource()
+    const value={schemaVersion:1,origin:'previous',...bad,stocks:[{code:stock,name:'存储测试',daily}]}
+    const result=await createAuctionService(source.fetcher,()=>at,{load:async()=>value,save:async()=>{}})()
+    assert.equal(result.automatic.candidatePool.reused,false)
+    assert.ok(source.calls.some(url=>url.includes('getYesterdayZTPool')))
+  }
+  const source=controlledSource()
+  const result=await createAuctionService(source.fetcher,()=>at,{load:async()=>{throw new Error('disk failure')},save:async()=>{throw new Error('disk failure')}})()
+  assert.equal(result.records[0].price092500,14.47)
+  assert.equal(result.automatic.candidatePool.persisted,false)
+  assert.match(result.automatic.warnings.join('；'),/读取失败/)
+  assert.match(result.automatic.warnings.join('；'),/未能持久保存/)
+})
+
+test('准备周五收盘涨停池，周一按前一交易日复用且实时名称更新ST过滤依据',async()=>{
+  let clock=Date.parse('2026-11-27T15:10:00+08:00'),saved=null
+  const calls=[]
+  const store={load:async date=>saved?.sourceDate===date?saved:null,save:async value=>{saved=structuredClone(value)}}
+  const fetcher=async url=>{
+    calls.push(url)
+    const id=new URL(url).searchParams.get('secid')
+    let data
+    if(url.includes('getTopicZTPool')) data={qdate:20261127,tc:1,pool:[{m:0,c:'002861',n:'周五股票'}]}
+    else if(url.includes('getYesterdayZTPool'))throw new Error('must use prepared pool')
+    else if(url.includes('/kline/'))data=id==='1.000001'?{code:'000001',klines:['2026-11-26,1,1,1,1,100,100','2026-11-27,1,1,1,1,100,100']}:{code:'002861',klines:['2026-11-27,14,14.96,14.96,14,298969,400000000']}
+    else if(url.includes('/details/'))data=ticks
+    else data=id==='1.000001'?{f57:'000001',f86:clock/1000}:{...quote,f58:'ST测试',f86:clock/1000}
+    return Response.json({rc:0,data})
+  }
+  const prepared=await createAuctionPreparation(fetcher,()=>clock,store)()
+  assert.equal(prepared.sourceDate,'2026-11-27')
+  assert.equal(prepared.dailyCount,1)
+  assert.match(prepared.message,/下一个交易日/)
+  calls.length=0
+  clock=Date.parse('2026-11-30T09:25:05+08:00')
+  const snapshot=await createAuctionService(fetcher,()=>clock,store)()
+  assert.equal(snapshot.previousTradeDate,'2026-11-27')
+  assert.equal(snapshot.automatic.candidatePool.reused,true)
+  assert.equal(snapshot.records[0].name,'ST测试')
+  assert.equal(calls.length,4)
+})
+
+test('收盘准备拒绝盘中、非今日收盘行情及不完整源池，不覆盖原文件',async()=>{
+  let clock=Date.parse('2026-11-27T14:59:59+08:00'),writes=0,calls=0,mode='old'
+  const store={load:async()=>null,save:async()=>{writes++}}
+  const fetcher=async url=>{
+    calls++
+    return Response.json({rc:0,data:url.includes('getTopicZTPool')?{qdate:20261127,tc:2,pool:[]}:{f57:'000001',f86:mode==='old'?at/1000:clock/1000}})
+  }
+  const prepare=createAuctionPreparation(fetcher,()=>clock,store)
+  await assert.rejects(prepare(),/15:05/)
+  assert.equal(calls,0)
+  clock=Date.parse('2026-11-27T15:10:00+08:00')
+  await assert.rejects(prepare(),/收盘行情/)
+  mode='partial'
+  await assert.rejects(prepare(),/不完整/)
+  assert.equal(writes,0)
+})
+
+test('准备候选池 API 使用服务端数据并沿用跨站限制',async()=>{
+  let calls=0
+  const handler=createFetchHandler({prepareAuction:async()=>{calls++;return {sourceDate:'2026-11-27',stockCount:1,message:'已保存'}}})
+  const env={ASSETS:{fetch:()=>new Response('assets')}}
+  const ok=await handler(new Request('https://gujian.test/api/auction/prepare',{method:'POST'}),env)
+  assert.equal(ok.status,200)
+  assert.equal((await ok.json()).stockCount,1)
+  const denied=await handler(new Request('https://gujian.test/api/auction/prepare',{method:'POST',headers:{origin:'https://other.test'}}),env)
+  assert.equal(denied.status,403)
+  assert.equal(calls,1)
 })

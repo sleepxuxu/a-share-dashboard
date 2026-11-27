@@ -9,6 +9,10 @@ import { canSaveAutomaticSelection, makeSelectionDay, saveSelections } from '../
 import { clearAuctionMatches, readAuctionMatches, restoreAuctionMatches, retainAuctionMatches, saveAuctionMatches } from '../lib/auctionRetention'
 
 const chinaToday = () => new Intl.DateTimeFormat('en-CA', { timeZone: 'Asia/Shanghai' }).format(new Date())
+const refreshDelay = () => {
+  const time = new Intl.DateTimeFormat('en-GB', { timeZone: 'Asia/Shanghai', hour: '2-digit', minute: '2-digit', second: '2-digit', hour12: false }).format(new Date())
+  return time >= '09:25:05' && time < '09:30:00' ? 5000 : 30000
+}
 const price = (value: number | null) => value === null ? '—' : value.toFixed(2)
 const label = { matched: '符合条件', rejected: '未通过', pending: '待核验' }
 const checkLabel = { pass: '通过', fail: '未通过', missing: '缺数据' }
@@ -26,6 +30,7 @@ export function AuctionPage() {
   const [snapshot, setDataset] = useState<AuctionDataset | null>(() => restoreAuctionMatches(matchMemory))
   const [retentionError, setRetentionError] = useState('')
   const [automaticMode, setAutomaticMode] = useState(true), [autoRefresh, setAutoRefresh] = useState(true)
+  const [refreshMs, setRefreshMs] = useState(refreshDelay)
   const [loading, setLoading] = useState(true), [fetchError, setFetchError] = useState('')
   const request = useRef<AbortController | null>(null)
   const fetchInProgress = useRef(false)
@@ -49,6 +54,18 @@ export function AuctionPage() {
   const changed = Number(percentInput) !== rules.volumePercent || Number(amountInput) * 1e8 !== rules.amountYuan
   const automatic = dataset?.automatic
   const [saveError, setSaveError] = useState('')
+  const [preparing, setPreparing] = useState(false), [prepareMessage, setPrepareMessage] = useState(''), [prepareError, setPrepareError] = useState('')
+  async function prepareNextAuction() {
+    setPreparing(true); setPrepareMessage(''); setPrepareError('')
+    try {
+      const response = await fetch('/api/auction/prepare', { method: 'POST' })
+      if (!response.headers.get('content-type')?.includes('application/json')) throw new Error('准备接口暂不可用，请检查后端部署。')
+      const result = await response.json()
+      if (!response.ok) throw new Error(result.error || '候选池准备失败，请稍后重试。')
+      setPrepareMessage(result.message)
+    } catch (error) { setPrepareError(error instanceof Error ? error.message : '候选池准备失败。') }
+    finally { setPreparing(false) }
+  }
   useEffect(() => {
     if (!dataset || demo || !automaticMode || !canSaveAutomaticSelection(dataset)) return
     try { saveSelections([makeSelectionDay(dataset, rules)]); setSaveError('') }
@@ -71,7 +88,14 @@ export function AuctionPage() {
     finally { if (request.current === controller) fetchInProgress.current = false; if (!controller.signal.aborted) setLoading(false) }
   }, [])
   useEffect(() => { void fetchAutomatic(); return () => request.current?.abort() }, [fetchAutomatic])
-  useRefreshInterval(() => void fetchAutomatic(true, true), automaticMode && autoRefresh, 30000)
+  useEffect(() => {
+    if (!automaticMode || !autoRefresh) return
+    const update = () => setRefreshMs(refreshDelay())
+    update()
+    const timer = window.setInterval(update, 1000)
+    return () => window.clearInterval(timer)
+  }, [automaticMode, autoRefresh])
+  useRefreshInterval(() => void fetchAutomatic(true, true), automaticMode && autoRefresh, refreshMs)
   useEffect(() => {
     if (!automaticMode || !autoRefresh) return
     let timer: number
@@ -107,7 +131,10 @@ export function AuctionPage() {
 
     <div className="auction-source"><span className="auction-source-icon"><Clock3 size={20} /></span><div><strong>{demo ? '演示模式 · 虚构数据' : automatic ? '自动竞价快照' : dataset ? '已导入竞价快照' : loading ? '正在读取秒级竞价数据' : '自动竞价数据暂不可用'}</strong><p>{dataset ? `${dataset.tradeDate} 竞价 · 前一交易日 ${dataset.previousTradeDate} · ${dataset.source}` : '从昨日涨停池取得候选，读取 09:15:00／01／02、09:24:57／58／59 精确分笔及 09:25:00–09:25:05 内最新竞价分笔；缺失时点保持待核验。'}</p></div><span className={`auction-source-tag ${demo ? 'demo' : ''}`}>{demo ? '非真实行情' : automatic ? automatic.stale || fetchError ? '快照待更新' : '已自动取数' : dataset ? '导入数据' : '自动取数'}</span></div>
     {fetchError && <div className="error-banner" role="alert"><Info size={17} /><span>{fetchError}{dataset ? ' · 保留当前快照，请留意来源与日期。' : ''}</span><button className="text-button" onClick={() => void fetchAutomatic(true)}>重试</button></div>}
-    {automatic && <div className="auction-auto-meta"><span>行情时间 {new Date(automatic.asOf).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}（北京时间）</span><span>已扫描 {automatic.scannedCount} 只 · {automatic.incompleteCount} 只存在缺失字段</span><label><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} />30 秒自动更新{!automaticMode ? '（已暂停）' : ''}</label></div>}
+    {automatic && <div className="auction-auto-meta"><span>行情时间 {new Date(automatic.asOf).toLocaleString('zh-CN', { timeZone: 'Asia/Shanghai', hour12: false })}（北京时间）</span><span>已扫描 {automatic.scannedCount} 只 · {automatic.incompleteCount} 只存在缺失字段{automatic.diagnostics ? ` · 本轮耗时 ${(automatic.diagnostics.durationMs / 1000).toFixed(1)} 秒` : ''}</span><label><input type="checkbox" checked={autoRefresh} onChange={event => setAutoRefresh(event.target.checked)} />{refreshMs / 1000} 秒自动更新{!automaticMode ? '（已暂停）' : ''}</label></div>}
+    <div className="auction-auto-meta"><span>{automatic?.candidatePool?.persisted ? `${automatic.candidatePool.reused ? '已复用' : '已保存'} ${automatic.candidatePool.sourceDate} 涨停候选池 · ${automatic.candidatePool.stockCount} 只 · ${automatic.candidatePool.dailyCount} 只成交量已备齐` : '收盘后可提前保存涨停名单，供下一个交易日直接扫描。'}</span><button className="text-button" disabled={preparing} onClick={() => void prepareNextAuction()}>{preparing ? '正在准备候选池…' : '准备下次竞价'}</button></div>
+    {prepareMessage && <p className="selection-note" role="status">{prepareMessage}</p>}
+    {prepareError && <p className="selection-note" role="alert">{prepareError}</p>}
     {automatic?.warnings.slice(3).map(warning => <p className="auction-history" key={warning}><Info size={15} />{warning}</p>)}
     {dataset && dataset.tradeDate !== chinaToday() && <p className="auction-history"><Info size={15} />当前为 {dataset.tradeDate} 的历史快照，筛选结果不代表今日行情。</p>}
 
@@ -136,7 +163,7 @@ export function AuctionPage() {
       </> : <div className="panel auction-empty"><div className="auction-empty-visual"><span /><Target size={32} /><span /></div><h3>{loading ? '正在自动扫描昨日涨停股票' : '让每一条竞价信号，有数据可核验'}</h3><p>{loading ? '正在核对交易日期、精确竞价分笔与昨日成交量…' : '可点击「刷新竞价」重试自动取数，也可导入快照核验。'}<br />支持逐项查看筛选依据与缺失字段。</p><div><button className="button primary" onClick={() => setImporting(true)}><Upload size={16} />导入快照，开始筛选</button><button className="button secondary" onClick={() => load(auctionDemo(), true)}><Play size={15} />体验演示数据</button></div><small>自动扫描沪深昨日涨停池 · 精确时点缺失时不补值</small></div>}
     </section>
 
-    <details className="panel auction-data-help"><summary><FileJson size={17} /><strong>数据口径与接入说明</strong><ChevronDown size={16} /></summary><div><p>自动模式以东方财富昨日涨停池确认第 1 项，仅覆盖池内沪深 A 股，不含该池未覆盖的 ST、科创板与未开板新股。今日涨停价来自实时行情，不按固定 10% 反推。精确读取 09:15:00／01／02 和 09:24:57／58／59，开竞价三个时点中任一有效价格等于今日涨停价即可；最终竞价价严格大于后三个时点中任一有效价格即可；最终竞价延长至 09:25:05，取 09:25:00–09:25:05 内最新一笔的价格和成交量，并显示实际采样时间。窗口外及分钟线不补齐缺失。</p><p>附加条件固定启用：排除创业板（深圳 30 开头）及名称带 ST、*ST 等风险警示标识的股票；09:25 最终竞价价须不低于前一交易日收盘价，负涨幅排除，0% 平开保留。缺少昨收或最终竞价价时标记待核验。最终竞价成交额还须 ≥ 1000 万元，低于该值直接排除，恰好 1000 万元保留；成交额缺失时待核验，量占比达标不能替代最低金额。这些条件对自动数据、导入快照和导出名单同样生效。</p><p>成交量统一为“股”，成交额统一为“元”。分笔与未复权日线的“手”均乘 100 换算；最终竞价成交额按 09:25 最终价格 × 成交股数计算，不采用未匹配量、委买量或全天累计成交。最终价格须与当日开盘价一致，3% 和 1 亿元均使用严格大于。</p><p>分笔不单独携带交易日期，按同期实时行情日期、分笔昨收、未复权日线交叉核验。上证指数未复权日线用于确定前一交易日。后端缓存 30 秒并合并并发请求，09:25:05 时失效窗口结束前的缓存；自动模式仅在页面可见时每 30 秒更新，开启自动更新时于 09:25:05 额外强制取数。窗口结束前仅预览、不存档，导入和演示模式暂停更新。公开源延迟、限流、缺时点时保留缺失或旧快照并明确提示。</p><p>自动模式按交易日及已应用阈值保留曾经入选的完整快照，刷新页面后仍可恢复；后续缺失、不满足或源池未返回时显示“已保留入选”。切换日期或阈值重新判断，清空快照会删除本机保留记录，演示和导入模式独立筛选。手动快照的日期与时点由导入文件声明，须核对供应商交易日历和字段定义。导入样本只保存在当前页面，离开或刷新后恢复自动取数。</p>{automatic?.warnings.slice(0, 3).map(message => <p key={message}>{message}</p>)}<table><thead><tr><th>JSON 字段</th><th>含义</th></tr></thead><tbody>{fields.map(([field, description]) => <tr key={field}><td><code>{field}</code></td><td>{description}</td></tr>)}</tbody></table></div></details>
+    <details className="panel auction-data-help"><summary><FileJson size={17} /><strong>数据口径与接入说明</strong><ChevronDown size={16} /></summary><div><p>自动模式以东方财富昨日涨停池或已保存的前一交易日收盘涨停池确认第 1 项，仅覆盖池内沪深 A 股，非全市场穷举。收盘后 15:05 起可点击「准备下次竞价」保存当日名单、收盘价与成交量；下一个交易日按交易日历匹配后直接扫描。未提前准备时首次扫描也自动保存候选池，刷新或重启后可复用；缺失资料自动补取，错误日期不复用。保存最近 30 个有记录的交易日。今日涨停价来自实时行情，不按固定 10% 反推。精确读取 09:15:00／01／02 和 09:24:57／58／59，开竞价三个时点中任一有效价格等于今日涨停价即可；最终竞价价严格大于后三个时点中任一有效价格即可；最终竞价延长至 09:25:05，取 09:25:00–09:25:05 内最新一笔的价格和成交量，并显示实际采样时间。窗口外及分钟线不补齐缺失。</p><p>附加条件固定启用：排除创业板（深圳 30 开头）及名称带 ST、*ST 等风险警示标识的股票；09:25 最终竞价价须不低于前一交易日收盘价，负涨幅排除，0% 平开保留。缺少昨收或最终竞价价时标记待核验。最终竞价成交额还须 ≥ 1000 万元，低于该值直接排除，恰好 1000 万元保留；成交额缺失时待核验，量占比达标不能替代最低金额。这些条件对自动数据、导入快照和导出名单同样生效。</p><p>成交量统一为“股”，成交额统一为“元”。分笔与未复权日线的“手”均乘 100 换算；最终竞价成交额按 09:25 最终价格 × 成交股数计算，不采用未匹配量、委买量或全天累计成交。最终价格须与当日开盘价一致，3% 和 1 亿元均使用严格大于。</p><p>分笔不单独携带交易日期，按同期实时行情日期、分笔昨收、未复权日线交叉核验。上证指数未复权日线用于确定前一交易日。昨日成交量按交易日缓存，交易日历缓存 5 分钟，完整非空候选池缓存 60 秒，跨日清理。后端结果缓存 30 秒并合并同一时段请求；09:25:05 取消窗口前仍在进行的扫描并重新取数，窗口前启动的缓存同时失效。8 只股票并发，个股行情、分笔及日线单次等待最多 4 秒，失败字段留待下轮补取。自动模式仅在页面可见时更新：09:25:05–09:30 每 5 秒，其余时间每 30 秒；开启自动更新时于 09:25:05 额外强制取数。窗口结束前仅预览、不存档，导入和演示模式暂停更新。公开源延迟、限流、缺时点时保留缺失或旧快照并明确提示。</p><p>自动模式按交易日及已应用阈值保留曾经入选的完整快照，刷新页面后仍可恢复；后续缺失、不满足或源池未返回时显示“已保留入选”。切换日期或阈值重新判断，清空快照会删除本机保留记录，演示和导入模式独立筛选。手动快照的日期与时点由导入文件声明，须核对供应商交易日历和字段定义。导入样本只保存在当前页面，离开或刷新后恢复自动取数。</p>{automatic?.warnings.slice(0, 3).map(message => <p key={message}>{message}</p>)}<table><thead><tr><th>JSON 字段</th><th>含义</th></tr></thead><tbody>{fields.map(([field, description]) => <tr key={field}><td><code>{field}</code></td><td>{description}</td></tr>)}</tbody></table></div></details>
     <p className="auction-disclaimer">规则匹配仅用于竞价观察，未经回测；09:25:05 取数窗口结束后保存最终筛选结果，不代表买入建议或收益预测。</p>
 
     {importing && <AuctionImport onClose={() => setImporting(false)} onImport={data => { load(data, false); setImporting(false) }} />}
